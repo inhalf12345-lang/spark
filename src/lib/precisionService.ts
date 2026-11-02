@@ -11,6 +11,8 @@ export interface DataPrecisionSettings {
   roundingMode: RoundingStrategy;
   storagePrecision: StoragePrecisionMode;
   cacheSyncResolution: 'realtime' | 'high_precision' | 'battery_saver';
+  e2eeStrictProtection: boolean;
+  stripAttachmentMetadata: boolean;
 }
 
 const PRECISION_SETTINGS_KEY = 'spark_data_precision_settings_v1';
@@ -21,6 +23,8 @@ export const DEFAULT_PRECISION_SETTINGS: DataPrecisionSettings = {
   roundingMode: 'half_up',
   storagePrecision: 'human_readable',
   cacheSyncResolution: 'realtime',
+  e2eeStrictProtection: true,
+  stripAttachmentMetadata: true,
 };
 
 /**
@@ -41,12 +45,14 @@ export function getPrecisionSettings(): DataPrecisionSettings {
 }
 
 /**
- * Saves precision settings to localStorage and dispatches a change event
+ * Saves precision settings to localStorage and dispatches a change event safely
  */
 export function savePrecisionSettings(settings: DataPrecisionSettings): void {
   try {
     localStorage.setItem(PRECISION_SETTINGS_KEY, JSON.stringify(settings));
-    window.dispatchEvent(new CustomEvent('spark_precision_changed', { detail: settings }));
+    if (typeof window !== 'undefined' && typeof window.CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('spark_precision_changed', { detail: settings }));
+    }
   } catch (e) {
     console.warn('Failed to save precision settings:', e);
   }

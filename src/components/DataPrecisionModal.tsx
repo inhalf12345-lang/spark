@@ -259,7 +259,94 @@ export const DataPrecisionModal: React.FC<DataPrecisionModalProps> = ({
             </div>
           </div>
 
-          {/* Section 3: Live Preview & Storage Telemetry */}
+          {/* Section 3: E2EE & Data Protection Precision */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                <span>E2EE & Privacy Protection Controls</span>
+              </label>
+              <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                AES-256-GCM
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !settings.e2eeStrictProtection;
+                  const updated = { ...settings, e2eeStrictProtection: next };
+                  setSettings(updated);
+                  savePrecisionSettings(updated);
+                  setStatusMessage(
+                    next
+                      ? 'Strict E2EE message verification enabled.'
+                      : 'Standard E2EE compatibility mode active.'
+                  );
+                }}
+                className="w-full p-3 rounded-2xl border border-slate-200/80 bg-slate-50/70 hover:bg-white flex items-center justify-between gap-3 text-left transition-all"
+              >
+                <div>
+                  <div className="text-xs font-semibold text-slate-900">
+                    Strict E2EE Ciphertext Verification
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    Enforces ECDH P-256 + AES-256-GCM authenticated encryption on 1-on-1 messages
+                  </div>
+                </div>
+                <div
+                  className={`w-10 h-5.5 rounded-full p-0.5 transition-colors shrink-0 ${
+                    settings.e2eeStrictProtection ? 'bg-emerald-500' : 'bg-slate-300'
+                  }`}
+                >
+                  <div
+                    className={`w-4.5 h-4.5 rounded-full bg-white shadow-xs transition-transform ${
+                      settings.e2eeStrictProtection ? 'translate-x-4.5' : 'translate-x-0'
+                    }`}
+                  />
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !settings.stripAttachmentMetadata;
+                  const updated = { ...settings, stripAttachmentMetadata: next };
+                  setSettings(updated);
+                  savePrecisionSettings(updated);
+                  setStatusMessage(
+                    next
+                      ? 'Media & attachment metadata scrubbing enabled.'
+                      : 'Media metadata scrubbing disabled.'
+                  );
+                }}
+                className="w-full p-3 rounded-2xl border border-slate-200/80 bg-slate-50/70 hover:bg-white flex items-center justify-between gap-3 text-left transition-all"
+              >
+                <div>
+                  <div className="text-xs font-semibold text-slate-900">
+                    Scrub Media & Timestamp Metadata
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    Strips device EXIF & high-entropy path identifiers when uploading chat photos
+                  </div>
+                </div>
+                <div
+                  className={`w-10 h-5.5 rounded-full p-0.5 transition-colors shrink-0 ${
+                    settings.stripAttachmentMetadata ? 'bg-emerald-500' : 'bg-slate-300'
+                  }`}
+                >
+                  <div
+                    className={`w-4.5 h-4.5 rounded-full bg-white shadow-xs transition-transform ${
+                      settings.stripAttachmentMetadata ? 'translate-x-4.5' : 'translate-x-0'
+                    }`}
+                  />
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Section 4: Live Preview & Storage Telemetry */}
           <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 text-white shadow-sm space-y-3">
             <div className="flex items-center justify-between text-xs">
               <span className="text-slate-300 font-medium flex items-center gap-1.5">
@@ -285,7 +372,7 @@ export const DataPrecisionModal: React.FC<DataPrecisionModalProps> = ({
             </div>
           </div>
 
-          {/* Section 4: Storage Breakdown & Optimization */}
+          {/* Section 5: Storage Breakdown & Optimization */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">

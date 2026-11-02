@@ -500,6 +500,7 @@ export default function App() {
         spread: 70,
         origin: { y: 0.6, x: 0.5 },
         colors: ['#ff3b69', '#38bdf8', '#fb7185', '#ffd700'],
+        disableForReducedMotion: true,
       });
     } catch {}
 

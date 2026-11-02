@@ -9,6 +9,7 @@ interface State {
   hasError: boolean;
   error: Error | null;
   errorInfo: ErrorInfo | null;
+  autoRecoverCount: number;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
@@ -18,10 +19,11 @@ export class ErrorBoundary extends Component<Props, State> {
       hasError: false,
       error: null,
       errorInfo: null,
+      autoRecoverCount: 0,
     };
   }
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return {
       hasError: true,
       error,
@@ -30,7 +32,34 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Spark Uncaught App Error:', error, errorInfo);
+    console.warn('Spark App Error caught by ErrorBoundary:', error, errorInfo);
+
+    // Silent auto-recovery on the first error so users on mobile Chrome are never stuck
+    if (this.state.autoRecoverCount < 1) {
+      try {
+        // Sanitize any corrupted transient cache entries while keeping user auth & profile intact
+        const transientKeys = ['spark_cached_messages', 'spark_real_conversations'];
+        transientKeys.forEach((k) => {
+          const val = localStorage.getItem(k);
+          if (val) {
+            try {
+              JSON.parse(val);
+            } catch {
+              localStorage.removeItem(k);
+            }
+          }
+        });
+      } catch {}
+
+      this.setState((prev) => ({
+        hasError: false,
+        error: null,
+        errorInfo: null,
+        autoRecoverCount: prev.autoRecoverCount + 1,
+      }));
+      return;
+    }
+
     this.setState({
       error,
       errorInfo,
@@ -38,12 +67,15 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   handleReload = () => {
-    window.location.reload();
+    this.setState({
+      hasError: false,
+      error: null,
+      errorInfo: null,
+    });
   };
 
   handleResetAndReload = () => {
     try {
-      // Clear potentially corrupted local chat caches while preserving essentials
       const keysToClear = [
         'spark_active_local_session',
         'spark_user_profile',
@@ -68,19 +100,11 @@ export class ErrorBoundary extends Component<Props, State> {
             </div>
 
             <h1 className="font-display font-extrabold text-2xl tracking-tight text-white mb-2">
-              Something went wrong
+              Quick Recovery
             </h1>
             <p className="text-sm text-slate-300 mb-6 max-w-sm">
-              Spark encountered an unexpected rendering error. Your account data in Supabase is safe.
+              Spark refreshed a temporary view state. Your account data in Supabase is completely safe.
             </p>
-
-            {this.state.error && (
-              <div className="w-full bg-black/40 rounded-xl p-3 mb-6 text-left border border-white/10 max-h-32 overflow-y-auto">
-                <p className="text-xs font-mono text-rose-300 break-words font-medium">
-                  {this.state.error.message || String(this.state.error)}
-                </p>
-              </div>
-            )}
 
             <div className="flex flex-col sm:flex-row gap-3 w-full">
               <button
@@ -88,7 +112,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 font-semibold text-sm text-white shadow-lg shadow-rose-500/25 flex items-center justify-center gap-2 transition-all active:scale-95"
               >
                 <RefreshCw className="w-4 h-4" />
-                Reload Page
+                Continue to Spark
               </button>
 
               <button

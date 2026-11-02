@@ -104,8 +104,12 @@ export function getSupabaseConfigState(): {
       ? import.meta.env.VITE_SUPABASE_ANON_KEY.trim()
       : '';
 
-  const localUrl = localStorage.getItem(STORAGE_KEY_URL)?.trim() || '';
-  const localAnon = localStorage.getItem(STORAGE_KEY_ANON)?.trim() || '';
+  let localUrl = '';
+  let localAnon = '';
+  try {
+    localUrl = localStorage.getItem(STORAGE_KEY_URL)?.trim() || '';
+    localAnon = localStorage.getItem(STORAGE_KEY_ANON)?.trim() || '';
+  } catch {}
 
   // Use configured URL or default project URL and anon key
   const validLocalUrl = localUrl && isValidHttpUrl(localUrl) && !isLikelyApiKey(localUrl) ? localUrl : '';
@@ -128,13 +132,22 @@ export function getSavedCredentials(): { url: string; anonKey: string } {
   const { rawUrl, rawAnon, detectedUrlIsKey } = getSupabaseConfigState();
 
   return {
-    url: detectedUrlIsKey ? '' : sanitizeSupabaseUrl(rawUrl),
-    anonKey: rawAnon || (detectedUrlIsKey ? rawUrl : ''),
+    url: detectedUrlIsKey ? DEFAULT_PROJECT_URL : sanitizeSupabaseUrl(rawUrl),
+    anonKey: rawAnon || (detectedUrlIsKey ? rawUrl : DEFAULT_ANON_KEY),
   };
 }
 
 let supabaseInstance: SupabaseClient | null = null;
 let currentConfigKey = '';
+
+const safeBrowserFetch: typeof fetch = (...args: Parameters<typeof fetch>) => {
+  const fn = typeof globalThis !== 'undefined' && typeof globalThis.fetch === 'function'
+    ? globalThis.fetch.bind(globalThis)
+    : typeof window !== 'undefined' && typeof window.fetch === 'function'
+    ? window.fetch.bind(window)
+    : fetch;
+  return fn(...args);
+};
 
 export function isSupabaseConfigured(): boolean {
   const { url, anonKey } = getSavedCredentials();
@@ -162,6 +175,9 @@ export function getSupabase(): SupabaseClient | null {
   if (!supabaseInstance || currentConfigKey !== key) {
     try {
       supabaseInstance = createClient(url, anonKey, {
+        global: {
+          fetch: safeBrowserFetch,
+        },
         auth: {
           persistSession: true,
           autoRefreshToken: true,
@@ -186,15 +202,19 @@ export function getSupabase(): SupabaseClient | null {
 export function saveSupabaseCredentials(url: string, anonKey: string) {
   const cleanUrl = sanitizeSupabaseUrl(url);
   const cleanAnon = anonKey.trim();
-  localStorage.setItem(STORAGE_KEY_URL, cleanUrl);
-  localStorage.setItem(STORAGE_KEY_ANON, cleanAnon);
+  try {
+    localStorage.setItem(STORAGE_KEY_URL, cleanUrl);
+    localStorage.setItem(STORAGE_KEY_ANON, cleanAnon);
+  } catch {}
   supabaseInstance = null; // force re-create
   return getSupabase();
 }
 
 export function clearSupabaseCredentials() {
-  localStorage.removeItem(STORAGE_KEY_URL);
-  localStorage.removeItem(STORAGE_KEY_ANON);
+  try {
+    localStorage.removeItem(STORAGE_KEY_URL);
+    localStorage.removeItem(STORAGE_KEY_ANON);
+  } catch {}
   supabaseInstance = null;
 }
 
@@ -222,7 +242,11 @@ export async function testSupabaseConnection(url: string, anonKey: string): Prom
   }
 
   try {
-    const testClient = createClient(url.trim().replace(/\/+$/, ''), anonKey.trim());
+    const testClient = createClient(url.trim().replace(/\/+$/, ''), anonKey.trim(), {
+      global: {
+        fetch: safeBrowserFetch,
+      },
+    });
     const tableNames = [
       'profiles',
       'conversations',

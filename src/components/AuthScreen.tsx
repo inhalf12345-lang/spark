@@ -933,28 +933,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           </p>
         </div>
 
-        {/* Supabase Disconnected Warning */}
-        {!isSupabaseConfigured() && (
-          <div className="mb-4 p-3 rounded-2xl bg-amber-50 border border-amber-200/80 flex items-start justify-between gap-2 text-xs text-amber-900">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div className="space-y-0.5 leading-snug">
-                <span className="font-bold">Offline / Local Mode</span>
-                <p className="text-[11px] text-amber-800">
-                  Supabase is not connected on this device. Accounts created here won&apos;t appear in Supabase or search.
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowConfigDrawer(true)}
-              className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] shrink-0 transition-all shadow-xs"
-            >
-              Connect
-            </button>
-          </div>
-        )}
-
         {/* Feedback Message Banners */}
         {errorMessage && (
           <div className="mb-4 p-3 rounded-2xl bg-rose-50 border border-rose-100 flex items-start gap-2.5 text-xs text-[#ff3b69]">

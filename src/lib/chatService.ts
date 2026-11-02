@@ -1344,10 +1344,14 @@ export async function deleteRealGroupConversation(
     }
   } catch {}
 
-  // Dispatch event so any open listeners update
-  window.dispatchEvent(
-    new CustomEvent('spark_conversation_deleted', { detail: { conversationId } })
-  );
+  // Dispatch event safely so any open listeners update
+  try {
+    if (typeof window !== 'undefined' && typeof window.CustomEvent === 'function') {
+      window.dispatchEvent(
+        new CustomEvent('spark_conversation_deleted', { detail: { conversationId } })
+      );
+    }
+  } catch {}
 
   return { success: true, message: 'Group deleted successfully.' };
 }

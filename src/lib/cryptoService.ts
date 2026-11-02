@@ -66,6 +66,15 @@ export function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+// Helper: Check if WebCrypto SubtleCrypto is available in current browser context
+export function isWebCryptoAvailable(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.crypto !== 'undefined' &&
+    typeof window.crypto.subtle !== 'undefined'
+  );
+}
+
 /**
  * Retrieves the device identity keypair from IndexedDB or generates a new ECDH P-256 pair.
  * The private key NEVER leaves the local device storage.
@@ -73,6 +82,9 @@ export function base64ToUint8Array(base64: string): Uint8Array {
 export async function getOrCreateDeviceIdentityKeyPair(
   userId: string
 ): Promise<{ publicKey: CryptoKey; privateKey: CryptoKey; publicJwk: JsonWebKey }> {
+  if (!isWebCryptoAvailable()) {
+    throw new Error('WebCrypto API is not available in this browser context.');
+  }
   const db = await openDeviceKeyDatabase();
 
   return new Promise((resolve, reject) => {

@@ -8,6 +8,7 @@ import {
   LogOut,
   ShieldCheck,
   SlidersHorizontal,
+  Lock,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { syncProfileToSupabaseDirectory } from '../lib/chatService';
