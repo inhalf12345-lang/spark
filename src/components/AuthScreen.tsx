@@ -10,23 +10,13 @@ import {
   XCircle,
   Loader2,
   RefreshCw,
-  Database,
   ChevronLeft,
   Key,
   Check,
-  Copy,
-  Smartphone,
 } from 'lucide-react';
 import {
   getSupabase,
   isSupabaseConfigured,
-  saveSupabaseCredentials,
-  getSavedCredentials,
-  sanitizeSupabaseUrl,
-  isLikelyApiKey,
-  getSupabaseConfigState,
-  DEFAULT_PROJECT_URL,
-  getOneClickShareableUrl,
 } from '../lib/supabase';
 import { UserProfile } from '../types';
 import {
@@ -57,7 +47,7 @@ export type AuthView =
 interface AuthScreenProps {
   initialView?: AuthView;
   onAuthSuccess: (profile: UserProfile) => void;
-  onOpenSupabaseGuide: () => void;
+  onOpenSupabaseGuide?: () => void;
   onContinueDemo?: () => void;
   recoveryUserEmail?: string | null;
   initialUserId?: string | null;
@@ -75,7 +65,6 @@ const PRESET_AVATARS = [
 export const AuthScreen: React.FC<AuthScreenProps> = ({
   initialView = 'login',
   onAuthSuccess,
-  onOpenSupabaseGuide,
   recoveryUserEmail,
   initialUserId,
 }) => {
@@ -92,17 +81,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-
-  // Supabase credentials configuration state
-  const configState = getSupabaseConfigState();
-  const savedCreds = getSavedCredentials();
-  const [showConfigDrawer, setShowConfigDrawer] = useState(false);
-  const [inputUrl, setInputUrl] = useState(savedCreds.url || DEFAULT_PROJECT_URL);
-  const [inputAnonKey, setInputAnonKey] = useState(
-    savedCreds.anonKey || (configState.detectedUrlIsKey ? configState.rawUrl : '')
-  );
-  const [configToast, setConfigToast] = useState<string | null>(null);
-  const [copiedShareLink, setCopiedShareLink] = useState(false);
 
   // Authenticated user ID during onboarding
   const [pendingUserId, setPendingUserId] = useState<string | null>(initialUserId || null);
@@ -194,41 +172,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
   const validateEmail = (val: string) => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim());
-  };
-
-  const handleSaveCredentials = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanUrl = sanitizeSupabaseUrl(inputUrl);
-    const cleanAnon = inputAnonKey.trim();
-
-    if (isLikelyApiKey(inputUrl.trim())) {
-      setInputAnonKey(inputUrl.trim());
-      setInputUrl('');
-      setConfigToast(
-        'Publishable key detected and saved to Anon Key! Now enter your Project URL (https://your-ref.supabase.co).'
-      );
-      return;
-    }
-
-    if (!cleanUrl) {
-      setConfigToast(
-        'Please enter a valid Supabase Project URL (e.g. https://xyzcompany.supabase.co).'
-      );
-      return;
-    }
-
-    if (!cleanAnon || cleanAnon.length < 10) {
-      setConfigToast('Please enter your Supabase anon/publishable public key.');
-      return;
-    }
-
-    setInputUrl(cleanUrl);
-    saveSupabaseCredentials(cleanUrl, cleanAnon);
-    setConfigToast('Supabase connected! You can now log in or sign up.');
-    setTimeout(() => {
-      setShowConfigDrawer(false);
-      setConfigToast(null);
-    }, 1500);
   };
 
   // Helper to resolve an authenticated or local user into their existing profile or username setup
@@ -1582,152 +1525,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             </button>
           </form>
         )}
-
-        {/* Supabase Connection Setup Drawer */}
-        <div className="mt-6 pt-4 border-t border-slate-100 flex flex-col gap-2">
-          <div className="flex items-center justify-between text-[11px] text-slate-400">
-            <button
-              type="button"
-              onClick={() => setShowConfigDrawer(!showConfigDrawer)}
-              className="flex items-center gap-1.5 hover:text-slate-700 transition-colors"
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  isSupabaseConfigured() ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'
-                }`}
-              />
-              <span className="font-semibold text-slate-600">
-                {isSupabaseConfigured() ? 'Supabase Connected' : 'Connect Your Supabase Project'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenSupabaseGuide}
-              className="text-[#ff3b69] hover:underline font-semibold flex items-center gap-1"
-            >
-              <Database className="w-3 h-3" />
-              <span>SQL Guide</span>
-            </button>
-          </div>
-
-          {showConfigDrawer && (
-            <form
-              onSubmit={handleSaveCredentials}
-              className="mt-2 p-3 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-2.5 text-left animate-fluid-glide"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800">Supabase Credentials</span>
-                <span className="text-[10px] text-slate-400">Stored in browser</span>
-              </div>
-
-              {configToast && (
-                <div className="p-2 rounded-lg bg-emerald-100 text-emerald-800 text-[11px] font-bold">
-                  {configToast}
-                </div>
-              )}
-
-              {configState.detectedUrlIsKey && (
-                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] leading-snug">
-                  <strong>Key Detected:</strong> An API key was entered as the Project URL. We automatically assigned it to your Anon Public Key. Please copy your <strong>Project URL</strong> (e.g. <code>https://your-ref.supabase.co</code>) from Supabase Dashboard under <strong>Project Settings → API</strong>.
-                </div>
-              )}
-
-              <div>
-                <div className="flex items-center justify-between mb-0.5">
-                  <label className="block text-[11px] font-semibold text-slate-600">
-                    Project URL
-                  </label>
-                  <span className="text-[10px] text-slate-400">Settings → API → Project URL</span>
-                </div>
-                <input
-                  type="text"
-                  required
-                  placeholder="https://xyzcompany.supabase.co"
-                  value={inputUrl}
-                  onChange={(e) => {
-                    const rawVal = e.target.value.trim();
-                    if (isLikelyApiKey(rawVal)) {
-                      setInputAnonKey(rawVal);
-                      setInputUrl('');
-                      setConfigToast(
-                        'Publishable API key detected and assigned to Anon Key! Now enter your Project URL.'
-                      );
-                    } else {
-                      setInputUrl(e.target.value);
-                    }
-                  }}
-                  className="w-full py-1.5 px-3 rounded-lg text-xs bg-white border border-slate-200 text-slate-800 font-mono focus:outline-none focus:border-[#ff3b69]"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-0.5">
-                  <label className="block text-[11px] font-semibold text-slate-600">
-                    Anon Public Key
-                  </label>
-                  <span className="text-[10px] text-slate-400">Settings → API → anon public</span>
-                </div>
-                <input
-                  type="text"
-                  required
-                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                  value={inputAnonKey}
-                  onChange={(e) => setInputAnonKey(e.target.value.trim())}
-                  className="w-full py-1.5 px-3 rounded-lg text-xs bg-white border border-slate-200 text-slate-800 font-mono focus:outline-none focus:border-[#ff3b69]"
-                />
-              </div>
-
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  type="submit"
-                  className="flex-1 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors"
-                >
-                  Save & Connect
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowConfigDrawer(false)}
-                  className="px-3 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold"
-                >
-                  Close
-                </button>
-              </div>
-
-              {getOneClickShareableUrl() && (
-                <div className="pt-2 border-t border-slate-200/60">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const link = getOneClickShareableUrl();
-                      if (link) {
-                        navigator.clipboard.writeText(link);
-                        setCopiedShareLink(true);
-                        setTimeout(() => setCopiedShareLink(false), 2500);
-                      }
-                    }}
-                    className="w-full py-1.5 px-3 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors"
-                  >
-                    {copiedShareLink ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>✓ Copied Auto-Connect Link!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Copy 1-Click Link for Other Devices</span>
-                      </>
-                    )}
-                  </button>
-                  <p className="text-[10px] text-slate-400 text-center mt-1">
-                    Send this link to any device to automatically connect without typing credentials!
-                  </p>
-                </div>
-              )}
-            </form>
-          )}
-        </div>
       </div>
     </div>
   );

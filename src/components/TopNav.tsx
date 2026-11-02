@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Flame, Coins, Database, ShieldCheck, LogOut, SlidersHorizontal } from 'lucide-react';
+import { Flame, Coins, LogOut, SlidersHorizontal } from 'lucide-react';
 import { UserProfile } from '../types';
 import { formatNumericPrecision, getPrecisionSettings, DataPrecisionSettings } from '../lib/precisionService';
 
 interface TopNavProps {
   profile: UserProfile;
-  isSupabaseConnected: boolean;
-  onOpenSupabaseGuide: () => void;
+  isSupabaseConnected?: boolean;
+  onOpenSupabaseGuide?: () => void;
   onOpenProfile: () => void;
   onOpenShop: () => void;
   onOpenLeaderboard: () => void;
@@ -88,29 +88,7 @@ export const TopNav: React.FC<TopNavProps> = ({
             </button>
           )}
 
-          {/* Supabase status icon */}
-          <button
-            onClick={onOpenSupabaseGuide}
-            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all relative ${
-              isSupabaseConnected
-                ? 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
-                : 'bg-amber-50 text-amber-600 hover:bg-amber-100 ring-1 ring-amber-300/60 animate-pulse'
-            }`}
-            title={
-              isSupabaseConnected
-                ? 'Supabase Connected (Live Database)'
-                : 'Offline / Supabase Disconnected - Tap to Connect'
-            }
-          >
-            {isSupabaseConnected ? (
-              <ShieldCheck className="w-3.5 h-3.5" />
-            ) : (
-              <>
-                <Database className="w-3.5 h-3.5" />
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 absolute -top-0.5 -right-0.5" />
-              </>
-            )}
-          </button>
+
 
           {/* Profile Avatar */}
           <button

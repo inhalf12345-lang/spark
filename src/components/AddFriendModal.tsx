@@ -20,7 +20,6 @@ import {
   fetchDiscoverableUsers,
   buildDirectUsernameProfile,
 } from '../lib/chatService';
-import { getSavedCredentials, isSupabaseConfigured } from '../lib/supabase';
 
 interface AddFriendModalProps {
   isOpen: boolean;
@@ -110,13 +109,7 @@ export const AddFriendModal: React.FC<AddFriendModalProps> = ({
   if (!isOpen) return null;
 
   const baseOrigin = `${window.location.origin}${window.location.pathname}`;
-  const creds = getSavedCredentials();
-  const inviteUrl =
-    isSupabaseConfigured() && creds.url && creds.anonKey
-      ? `${baseOrigin}?sb_url=${encodeURIComponent(creds.url)}&sb_key=${encodeURIComponent(
-          creds.anonKey
-        )}`
-      : baseOrigin;
+  const inviteUrl = baseOrigin;
 
   const handleCopyInvite = () => {
     navigator.clipboard.writeText(inviteUrl);

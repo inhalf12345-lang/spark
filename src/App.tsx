@@ -253,6 +253,18 @@ export default function App() {
     };
   }, [loadConversations]);
 
+  // Hidden developer shortcut to toggle Supabase Guide modal if ever needed (Ctrl+Shift+S or Cmd+Shift+S)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        setIsSupabaseModalOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   // Realtime conversation updates: whenever a new message arrives, refresh conversations list
   useEffect(() => {
     if (!isAuthenticated || !profile.id || !isSupabaseConfigured()) return;
@@ -602,7 +614,6 @@ export default function App() {
           initialUserId={sessionUser?.id || null}
           recoveryUserEmail={sessionUser?.email || null}
           onAuthSuccess={handleAuthSuccess}
-          onOpenSupabaseGuide={() => setIsSupabaseModalOpen(true)}
         />
         <SupabaseGuideModal
           isOpen={isSupabaseModalOpen}
@@ -624,8 +635,6 @@ export default function App() {
         {/* Top Header */}
         <TopNav
           profile={profile}
-          isSupabaseConnected={isSupabaseConnected}
-          onOpenSupabaseGuide={() => setIsSupabaseModalOpen(true)}
           onOpenProfile={() => setIsLoginModalOpen(true)}
           onOpenShop={() => setIsShopModalOpen(true)}
           onOpenLeaderboard={() => setIsLeaderboardModalOpen(true)}
@@ -702,7 +711,6 @@ export default function App() {
         profile={profile}
         onSaveProfile={handleSaveProfile}
         onSignOut={handleSignOut}
-        onOpenSupabaseGuide={() => setIsSupabaseModalOpen(true)}
         onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
       />
 
