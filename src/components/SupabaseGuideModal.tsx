@@ -24,6 +24,7 @@ import {
   DatabaseVerificationReport,
   isLikelyApiKey,
   DEFAULT_PROJECT_URL,
+  DEFAULT_ANON_KEY,
   getOneClickShareableUrl,
 } from '../lib/supabase';
 
@@ -40,9 +41,10 @@ export const SupabaseGuideModal: React.FC<SupabaseGuideModalProps> = ({
 }) => {
   const saved = getSavedCredentials();
   const [url, setUrl] = useState(saved.url || DEFAULT_PROJECT_URL);
-  const [anonKey, setAnonKey] = useState(saved.anonKey || '');
+  const [anonKey, setAnonKey] = useState(saved.anonKey || DEFAULT_ANON_KEY || '');
   const [copiedType, setCopiedType] = useState<'migration' | 'setup' | 'delete' | null>(null);
   const [copiedShareLink, setCopiedShareLink] = useState(false);
+  const [copiedEnvSnippet, setCopiedEnvSnippet] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<DatabaseVerificationReport | null>(null);
   const [activeTab, setActiveTab] = useState<'guide' | 'sql' | 'connect'>('sql');

@@ -47,12 +47,14 @@ import {
   syncProfileToSupabaseDirectory,
   syncDailyQuestsToSupabase,
   syncStoryToSupabase,
+  deleteRealGroupConversation,
 } from './lib/chatService';
 import {
   getOrCreateDeviceIdentityKeyPair,
   syncPublicKeyToSupabase,
   purgeCryptoSessionMemory,
 } from './lib/cryptoService';
+import { DataPrecisionModal } from './components/DataPrecisionModal';
 
 export default function App() {
   // Session & Authentication state (synchronously restored so user stays signed in until explicit Sign Out)
@@ -87,6 +89,7 @@ export default function App() {
   const [isLeaderboardModalOpen, setIsLeaderboardModalOpen] = useState(false);
   const [isCreateStoryModalOpen, setIsCreateStoryModalOpen] = useState(false);
   const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
+  const [isDataPrecisionModalOpen, setIsDataPrecisionModalOpen] = useState(false);
   const [viewingStory, setViewingStory] = useState<UserStory | null>(null);
 
   // Status & FX
@@ -379,8 +382,22 @@ export default function App() {
       avatar_url: conv.is_group && conv.avatar_url ? conv.avatar_url : conv.other_user.avatar_url,
       member_count: conv.member_count,
       members: conv.members,
+      created_by: conv.created_by,
       conversation_id: conv.id,
     });
+  };
+
+  const handleDeleteGroup = async (conversationId: string) => {
+    try {
+      await deleteRealGroupConversation(conversationId, profile.id);
+      await loadConversations(profile.id);
+      if (activeConversationId === conversationId) {
+        setSelectedFriend(null);
+        setActiveConversationId(null);
+      }
+    } catch (err: any) {
+      console.error('Failed to delete group:', err);
+    }
   };
 
   const handleGroupCreated = async (newConvId: string) => {
@@ -612,6 +629,7 @@ export default function App() {
           onOpenProfile={() => setIsLoginModalOpen(true)}
           onOpenShop={() => setIsShopModalOpen(true)}
           onOpenLeaderboard={() => setIsLeaderboardModalOpen(true)}
+          onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
           onSignOut={handleSignOut}
           animatingCoins={animatingCoins}
         />
@@ -634,6 +652,8 @@ export default function App() {
             onViewStory={(story) => setViewingStory(story)}
             onClaimQuest={handleClaimQuest}
             onOpenCreateGroup={() => setIsCreateGroupModalOpen(true)}
+            onDeleteGroup={handleDeleteGroup}
+            onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
           />
         </main>
 
@@ -646,6 +666,7 @@ export default function App() {
             onBack={handleCloseChat}
             onUpdateCoins={handleUpdateCoins}
             originCoords={chatOriginCoords}
+            onGroupDeleted={handleDeleteGroup}
           />
         )}
       </div>
@@ -682,6 +703,17 @@ export default function App() {
         onSaveProfile={handleSaveProfile}
         onSignOut={handleSignOut}
         onOpenSupabaseGuide={() => setIsSupabaseModalOpen(true)}
+        onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
+      />
+
+      <DataPrecisionModal
+        isOpen={isDataPrecisionModalOpen}
+        onClose={() => setIsDataPrecisionModalOpen(false)}
+        profile={profile}
+        onProfileUpdated={(updated) => {
+          setProfile(updated);
+          saveLocalProfile(updated);
+        }}
       />
 
       <ShopModal

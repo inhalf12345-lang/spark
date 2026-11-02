@@ -1,6 +1,7 @@
-import React from 'react';
-import { Flame, Coins, Database, ShieldCheck, LogOut } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Flame, Coins, Database, ShieldCheck, LogOut, SlidersHorizontal } from 'lucide-react';
 import { UserProfile } from '../types';
+import { formatNumericPrecision, getPrecisionSettings, DataPrecisionSettings } from '../lib/precisionService';
 
 interface TopNavProps {
   profile: UserProfile;
@@ -9,6 +10,7 @@ interface TopNavProps {
   onOpenProfile: () => void;
   onOpenShop: () => void;
   onOpenLeaderboard: () => void;
+  onOpenDataPrecision?: () => void;
   onSignOut?: () => void;
   animatingCoins?: boolean;
 }
@@ -20,9 +22,23 @@ export const TopNav: React.FC<TopNavProps> = ({
   onOpenProfile,
   onOpenShop,
   onOpenLeaderboard,
+  onOpenDataPrecision,
   onSignOut,
   animatingCoins = false,
 }) => {
+  const [precisionSettings, setPrecisionSettings] = useState<DataPrecisionSettings>(getPrecisionSettings());
+
+  useEffect(() => {
+    const handlePrecisionChange = (e: any) => {
+      if (e.detail) {
+        setPrecisionSettings(e.detail);
+      } else {
+        setPrecisionSettings(getPrecisionSettings());
+      }
+    };
+    window.addEventListener('spark_precision_changed', handlePrecisionChange);
+    return () => window.removeEventListener('spark_precision_changed', handlePrecisionChange);
+  }, []);
   return (
     <header className="w-full bg-white/90 backdrop-blur-md border-b border-slate-100/80 px-4 sm:px-6 py-3 transition-colors">
       <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
@@ -58,8 +74,19 @@ export const TopNav: React.FC<TopNavProps> = ({
             title="Coins Balance - Tap for Rewards"
           >
             <Coins className="w-3.5 h-3.5 text-amber-500" />
-            <span className="font-mono-numbers">{profile.coins.toLocaleString()}</span>
+            <span className="font-mono-numbers">{formatNumericPrecision(profile.coins, precisionSettings)}</span>
           </button>
+
+          {/* Data Precision Settings */}
+          {onOpenDataPrecision && (
+            <button
+              onClick={onOpenDataPrecision}
+              className="w-7 h-7 rounded-full flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-all active:scale-95 shadow-2xs"
+              title="Manage Data Precision & Storage"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           {/* Supabase status icon */}
           <button

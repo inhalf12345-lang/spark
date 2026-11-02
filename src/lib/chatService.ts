@@ -1261,6 +1261,99 @@ export async function createRealGroupConversation(
 }
 
 /**
+ * Deletes a real group conversation.
+ * Strictly enforces that ONLY the person who created the group (creatorId / created_by) can delete it.
+ */
+export async function deleteRealGroupConversation(
+  conversationId: string,
+  requesterUserId: string
+): Promise<{ success: boolean; message: string }> {
+  if (!conversationId) {
+    throw new Error('Invalid conversation ID.');
+  }
+
+  // 1. Verify locally first
+  const localConvs = getLocalStoredConversations(requesterUserId);
+  const targetLocal = localConvs.find((c) => c.id === conversationId);
+
+  // If local record exists and has a created_by that doesn't match requester
+  if (targetLocal && targetLocal.created_by && targetLocal.created_by !== requesterUserId) {
+    throw new Error('Permission denied: Only the person who created this group can delete it.');
+  }
+
+  const supabase = getSupabase();
+  if (isSupabaseConfigured() && supabase) {
+    await ensureSupabaseAuthSession();
+
+    // Query database to verify ownership authoritative check
+    const { data: dbConv } = await supabase
+      .from('conversations')
+      .select('id, is_group, created_by')
+      .eq('id', conversationId)
+      .maybeSingle();
+
+    if (dbConv) {
+      if (!dbConv.is_group) {
+        throw new Error('This action is only valid for group conversations.');
+      }
+      if (dbConv.created_by && dbConv.created_by !== requesterUserId) {
+        throw new Error('Permission denied: Only the person who created this group can delete it.');
+      }
+
+      // Delete child data first to respect foreign keys
+      try {
+        await supabase.from('messages').delete().eq('conversation_id', conversationId);
+      } catch (e) {
+        console.warn('Delete group messages note:', e);
+      }
+
+      try {
+        await supabase.from('conversation_members').delete().eq('conversation_id', conversationId);
+      } catch (e) {
+        console.warn('Delete group members note:', e);
+      }
+
+      // Delete conversation row
+      const { error: delError } = await supabase
+        .from('conversations')
+        .delete()
+        .eq('id', conversationId);
+
+      if (delError && !delError.message.includes('foreign key')) {
+        console.warn('Delete conversation row note:', delError.message);
+      }
+    }
+  }
+
+  // Clear from local user conversations
+  const updatedLocal = localConvs.filter((c) => c.id !== conversationId);
+  saveLocalStoredConversations(requesterUserId, updatedLocal);
+
+  // Clear cached messages
+  saveCachedMessages(conversationId, []);
+
+  // Also clean up from global storage if present
+  try {
+    const rawGlobal = localStorage.getItem('spark_local_conversations_v1');
+    if (rawGlobal) {
+      const parsed = JSON.parse(rawGlobal);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((c: any) => c.id !== conversationId);
+        localStorage.setItem('spark_local_conversations_v1', JSON.stringify(filtered));
+      }
+    }
+  } catch {}
+
+  // Dispatch event so any open listeners update
+  window.dispatchEvent(
+    new CustomEvent('spark_conversation_deleted', { detail: { conversationId } })
+  );
+
+  return { success: true, message: 'Group deleted successfully.' };
+}
+
+
+/**
  * Uploads an image for a group conversation into Supabase Storage private bucket 'chat-media'.
  * Saves only the image path/reference in messages.media_url.
  */

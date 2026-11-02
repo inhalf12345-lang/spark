@@ -18,16 +18,31 @@ import {
   X,
   Maximize2,
   Download,
+  Trash2,
+  Info,
+  Check,
+  ShieldAlert,
 } from 'lucide-react';
 import { ChatMessage, UserProfile, PublicUserProfile } from '../types';
-import { evaluateMessageReward, appendCachedMessage, saveCachedMessages } from '../lib/storage';
+import {
+  evaluateMessageReward,
+  appendCachedMessage,
+  saveCachedMessages,
+  getLocalStoredConversations,
+} from '../lib/storage';
 import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
 import {
   fetchRealMessages,
   sendRealMessageToSupabase,
   uploadGroupChatImage,
   resolveGroupMediaUrl,
+  deleteRealGroupConversation,
 } from '../lib/chatService';
+import {
+  formatTimestampPrecision,
+  getPrecisionSettings,
+  DataPrecisionSettings,
+} from '../lib/precisionService';
 import {
   getOrCreateDeviceIdentityKeyPair,
   fetchRecipientPublicKey,
@@ -48,6 +63,7 @@ interface ChatTargetUser {
   is_group?: boolean;
   member_count?: number;
   members?: PublicUserProfile[];
+  created_by?: string;
 }
 
 interface ChatViewProps {
@@ -57,6 +73,7 @@ interface ChatViewProps {
   onBack: () => void;
   onUpdateCoins: (earned: number) => void;
   originCoords?: { x: number; y: number } | null;
+  onGroupDeleted?: (conversationId: string) => void;
 }
 
 // Subcomponent to resolve and display private Supabase Storage images asynchronously
@@ -142,6 +159,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onBack,
   onUpdateCoins,
   originCoords,
+  onGroupDeleted,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -155,6 +173,52 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [coinDroplets, setCoinDroplets] = useState<{ id: string; amount: number; x: number }[]>([]);
   const [callNotice, setCallNotice] = useState<string | null>(null);
 
+  const activeConvId = conversationId || friend.conversation_id || friend.id || 'default_conv';
+
+  // Group Details & Deletion states (creator-only deletion enforcement)
+  const [isGroupInfoOpen, setIsGroupInfoOpen] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeletingGroup, setIsDeletingGroup] = useState(false);
+  const [deleteGroupError, setDeleteGroupError] = useState<string | null>(null);
+  const [groupCreatorId, setGroupCreatorId] = useState<string | undefined>(friend.created_by);
+
+  // Data Precision Settings
+  const [precisionSettings, setPrecisionSettings] = useState<DataPrecisionSettings>(getPrecisionSettings());
+
+  useEffect(() => {
+    const handlePrecisionChange = (e: any) => {
+      if (e.detail) {
+        setPrecisionSettings(e.detail);
+      } else {
+        setPrecisionSettings(getPrecisionSettings());
+      }
+    };
+    window.addEventListener('spark_precision_changed', handlePrecisionChange);
+    return () => window.removeEventListener('spark_precision_changed', handlePrecisionChange);
+  }, []);
+
+  useEffect(() => {
+    if (friend.is_group) {
+      if (friend.created_by) {
+        setGroupCreatorId(friend.created_by);
+      } else {
+        const local = getLocalStoredConversations(profile.id);
+        const match = local.find((c: any) => c.id === activeConvId);
+        if (match?.created_by) {
+          setGroupCreatorId(match.created_by);
+        }
+      }
+    }
+  }, [friend.is_group, friend.created_by, activeConvId, profile.id]);
+
+  const isGroupCreator =
+    Boolean(friend.is_group) &&
+    Boolean(
+      groupCreatorId &&
+        (groupCreatorId === profile.id ||
+          groupCreatorId.toLowerCase() === profile.username.toLowerCase())
+    );
+
   // Group Image Upload states (exclusive to group chats)
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
@@ -162,7 +226,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const activeConvId = conversationId || friend.conversation_id || friend.id || 'default_conv';
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -660,13 +723,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
 
 
-  const formatMessageTime = (isoString: string) => {
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch {
-      return '';
+  const handleDeleteGroup = async () => {
+    if (!isGroupCreator) {
+      setDeleteGroupError('Permission denied: Only the person who created this group can delete it.');
+      return;
     }
+    setIsDeletingGroup(true);
+    setDeleteGroupError(null);
+    try {
+      await deleteRealGroupConversation(activeConvId, profile.id);
+      setIsGroupInfoOpen(false);
+      setShowDeleteConfirm(false);
+      if (onGroupDeleted) {
+        onGroupDeleted(activeConvId);
+      }
+      handleBack();
+    } catch (err: any) {
+      setDeleteGroupError(err?.message || 'Failed to delete group. Please try again.');
+      setIsDeletingGroup(false);
+    }
+  };
+
+  const formatMessageTime = (isoString: string) => {
+    if (!isoString) return '';
+    return formatTimestampPrecision(isoString, precisionSettings);
   };
 
   return (
@@ -696,74 +776,96 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <ChevronLeft className="w-6 h-6 stroke-[2.8]" />
             </button>
 
-            <div className="relative">
-              <div className="w-10 h-10 rounded-full p-[1.5px] bg-gradient-to-tr from-[#ff3b69] to-[#fb7185] shadow-xs">
-                <img
-                  src={friend.avatar_url}
-                  alt={friend.display_name || friend.username}
-                  className="w-full h-full rounded-full object-cover bg-white"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
-              {friend.is_group ? (
-                <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#ff3b69] border-2 border-white flex items-center justify-center text-white">
-                  <Users className="w-2.5 h-2.5" />
-                </span>
-              ) : (
-                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-white" />
-              )}
-            </div>
-
-            <div>
-              <div className="flex items-center gap-1.5">
-                <h2 className="font-display font-bold text-sm tracking-tight text-slate-900">
-                  {friend.display_name || friend.username}
-                </h2>
-                {!friend.is_group && (
-                  <div className="flex items-center gap-0.5 text-rose-500 font-bold text-[10px]">
-                    <Flame className="w-3 h-3 fill-rose-500" />
-                    <span>{friend.streak_days || 1}d</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Status */}
-              <div className="flex items-center gap-2 text-[10px]">
+            <div
+              className={`flex items-center gap-2.5 ${friend.is_group ? 'cursor-pointer hover:opacity-90' : ''}`}
+              onClick={() => {
+                if (friend.is_group) setIsGroupInfoOpen(true);
+              }}
+              title={friend.is_group ? 'Click for group details & settings' : undefined}
+            >
+              <div className="relative">
+                <div className="w-10 h-10 rounded-full p-[1.5px] bg-gradient-to-tr from-[#ff3b69] to-[#fb7185] shadow-xs">
+                  <img
+                    src={friend.avatar_url}
+                    alt={friend.display_name || friend.username}
+                    className="w-full h-full rounded-full object-cover bg-white"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
                 {friend.is_group ? (
-                  <span className="text-slate-500 font-medium flex items-center gap-1">
-                    <Users className="w-3 h-3 text-[#ff3b69]" />
-                    <span>{friend.member_count || (friend.members?.length || 2)} members</span>
+                  <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#ff3b69] border-2 border-white flex items-center justify-center text-white">
+                    <Users className="w-2.5 h-2.5" />
                   </span>
                 ) : (
-                  <>
-                    <span className="text-slate-400 font-mono">@{friend.username}</span>
-                    {isKeyNegotiating ? (
-                      <span className="text-amber-500 flex items-center gap-0.5">
-                        <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                        <span>Verifying keys...</span>
-                      </span>
-                    ) : isE2EEActive ? (
-                      <span
-                        className="text-emerald-600 font-semibold flex items-center gap-0.5 bg-emerald-50 px-1.5 py-0.2 rounded-full"
-                        title="Messages are end-to-end encrypted with AES-256-GCM. Supabase cannot read them."
-                      >
-                        <ShieldCheck className="w-3 h-3" />
-                        <span>End-to-End Encrypted</span>
-                      </span>
-                    ) : (
-                      <span className="text-slate-400 flex items-center gap-0.5">
-                        <Lock className="w-2.5 h-2.5" />
-                        <span>Direct chat</span>
-                      </span>
-                    )}
-                  </>
+                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-white" />
                 )}
+              </div>
+
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <h2 className="font-display font-bold text-sm tracking-tight text-slate-900">
+                    {friend.display_name || friend.username}
+                  </h2>
+                  {!friend.is_group && (
+                    <div className="flex items-center gap-0.5 text-rose-500 font-bold text-[10px]">
+                      <Flame className="w-3 h-3 fill-rose-500" />
+                      <span>{friend.streak_days || 1}d</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Status */}
+                <div className="flex items-center gap-2 text-[10px]">
+                  {friend.is_group ? (
+                    <span className="text-slate-500 font-medium flex items-center gap-1">
+                      <Users className="w-3 h-3 text-[#ff3b69]" />
+                      <span>{friend.member_count || (friend.members?.length || 2)} members</span>
+                      {isGroupCreator && (
+                        <span className="text-[9px] font-semibold text-[#ff3b69] bg-rose-50 px-1.5 py-0.2 rounded-full">
+                          Creator
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-slate-400 font-mono">@{friend.username}</span>
+                      {isKeyNegotiating ? (
+                        <span className="text-amber-500 flex items-center gap-0.5">
+                          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                          <span>Verifying keys...</span>
+                        </span>
+                      ) : isE2EEActive ? (
+                        <span
+                          className="text-emerald-600 font-semibold flex items-center gap-0.5 bg-emerald-50 px-1.5 py-0.2 rounded-full"
+                          title="Messages are end-to-end encrypted with AES-256-GCM. Supabase cannot read them."
+                        >
+                          <ShieldCheck className="w-3 h-3" />
+                          <span>End-to-End Encrypted</span>
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 flex items-center gap-0.5">
+                          <Lock className="w-2.5 h-2.5" />
+                          <span>Direct chat</span>
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Right: Call Actions */}
-          <div className="flex items-center gap-2 text-[#ff3b69]">
+          {/* Right: Call Actions + Group Info */}
+          <div className="flex items-center gap-1.5 text-[#ff3b69]">
+            {friend.is_group && (
+              <button
+                onClick={() => setIsGroupInfoOpen(true)}
+                className="w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90 text-slate-600 hover:text-[#ff3b69]"
+                title="Group Info & Creator Settings"
+              >
+                <Info className="w-4 h-4" />
+              </button>
+            )}
             <button
               onClick={() => triggerCallNotice('Audio Call')}
               className="w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90"
@@ -1103,7 +1205,208 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
+      {/* Group Info & Creator Management Modal */}
+      {friend.is_group && isGroupInfoOpen && (
+        <div
+          className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => {
+            if (!isDeletingGroup) {
+              setIsGroupInfoOpen(false);
+              setShowDeleteConfirm(false);
+              setDeleteGroupError(null);
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[88vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-[#ff3b69]" />
+                <h3 className="font-display font-bold text-base text-slate-900">Group Details</h3>
+              </div>
+              <button
+                disabled={isDeletingGroup}
+                onClick={() => {
+                  setIsGroupInfoOpen(false);
+                  setShowDeleteConfirm(false);
+                  setDeleteGroupError(null);
+                }}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
+            {/* Modal Body */}
+            <div className="p-6 space-y-5 overflow-y-auto">
+              {/* Group Identity Card */}
+              <div className="flex items-center gap-3.5 p-3.5 rounded-2xl bg-slate-50 border border-slate-100">
+                <img
+                  src={friend.avatar_url}
+                  alt={friend.display_name || friend.username}
+                  className="w-13 h-13 rounded-full object-cover bg-white border border-slate-200 shrink-0"
+                />
+                <div className="min-w-0 flex-1">
+                  <h4 className="font-display font-bold text-sm text-slate-900 truncate">
+                    {friend.display_name || friend.username}
+                  </h4>
+                  <p className="text-xs text-slate-500 font-medium">
+                    {friend.member_count || friend.members?.length || 2} members in this group
+                  </p>
+                </div>
+              </div>
+
+              {/* Creator Status Indicator */}
+              {isGroupCreator ? (
+                <div className="p-3 rounded-2xl bg-emerald-50/80 border border-emerald-200/80 text-emerald-800 text-xs flex items-center gap-2.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <div>
+                    <span className="font-bold">Group Creator / Owner: </span>
+                    <span>You created this group and have full administrator permissions.</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 text-slate-600 text-xs flex items-center gap-2.5">
+                  <Lock className="w-4 h-4 text-slate-400 shrink-0" />
+                  <div>
+                    <span className="font-semibold">Role: Member · </span>
+                    <span className="text-slate-500">Only the person who created this group can delete it.</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Members List */}
+              {friend.members && friend.members.length > 0 && (
+                <div>
+                  <h5 className="text-xs font-bold text-slate-700 mb-2">Group Members</h5>
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                    {friend.members.map((m) => {
+                      const isOwner = groupCreatorId === m.id || (isGroupCreator && m.id === profile.id);
+                      return (
+                        <div
+                          key={m.id}
+                          className="flex items-center justify-between p-2 rounded-xl bg-slate-50/80 border border-slate-100 text-xs"
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <img
+                              src={m.avatar_url}
+                              alt={m.username}
+                              className="w-7 h-7 rounded-full object-cover bg-white shrink-0"
+                            />
+                            <div className="truncate">
+                              <span className="font-semibold text-slate-800 truncate block">
+                                {m.display_name || m.username}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-mono block">
+                                @{m.username}
+                              </span>
+                            </div>
+                          </div>
+                          {isOwner && (
+                            <span className="text-[10px] font-bold text-[#ff3b69] bg-rose-50 px-2 py-0.5 rounded-full shrink-0">
+                              Creator
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Danger Zone: ONLY shown to group creator */}
+              {isGroupCreator && (
+                <div className="pt-2 border-t border-slate-100">
+                  <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200/80 space-y-3">
+                    <div className="flex items-start gap-2.5">
+                      <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <h5 className="text-xs font-bold text-rose-900">Delete Group</h5>
+                        <p className="text-[11px] text-rose-700/90 leading-relaxed mt-0.5">
+                          Permanently delete this group for all members. All message history, media, and group tasks will be removed.
+                        </p>
+                      </div>
+                    </div>
+
+                    {deleteGroupError && (
+                      <div className="p-2 rounded-xl bg-white border border-rose-300 text-rose-600 text-xs font-semibold flex items-center gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{deleteGroupError}</span>
+                      </div>
+                    )}
+
+                    {!showDeleteConfirm ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowDeleteConfirm(true)}
+                        className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors active:scale-98"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Group (Creator Only)</span>
+                      </button>
+                    ) : (
+                      <div className="space-y-2 p-3 rounded-xl bg-white border border-rose-200 animate-in fade-in">
+                        <p className="text-xs font-bold text-slate-900 text-center">
+                          Confirm deletion of &quot;{friend.display_name || friend.username}&quot;?
+                        </p>
+                        <p className="text-[10px] text-slate-500 text-center">
+                          This action cannot be undone.
+                        </p>
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={isDeletingGroup}
+                            onClick={() => setShowDeleteConfirm(false)}
+                            className="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isDeletingGroup}
+                            onClick={handleDeleteGroup}
+                            className="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                          >
+                            {isDeletingGroup ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Deleting...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Yes, Delete</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                disabled={isDeletingGroup}
+                onClick={() => {
+                  setIsGroupInfoOpen(false);
+                  setShowDeleteConfirm(false);
+                }}
+                className="px-4 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

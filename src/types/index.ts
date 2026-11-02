@@ -92,6 +92,10 @@ export interface FriendOrb {
   story_active?: boolean;
   equipped_frame?: string;
   conversation_id?: string;
+  is_group?: boolean;
+  members?: PublicUserProfile[];
+  member_count?: number;
+  created_by?: string;
 }
 
 export interface FriendRequest {

@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Share2,
   Link as LinkIcon,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { syncProfileToSupabaseDirectory } from '../lib/chatService';
@@ -33,6 +34,7 @@ interface LoginModalProps {
   onSaveProfile: (updated: UserProfile) => void;
   onSignOut?: () => void;
   onOpenSupabaseGuide?: () => void;
+  onOpenDataPrecision?: () => void;
 }
 
 const PRESET_AVATARS = [
@@ -51,6 +53,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onSaveProfile,
   onSignOut,
   onOpenSupabaseGuide,
+  onOpenDataPrecision,
 }) => {
   const [displayName, setDisplayName] = useState(profile.display_name || profile.username);
   const [bio, setBio] = useState(profile.bio || '');
@@ -220,6 +223,26 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               ECDH-P256 / AES-GCM
             </span>
           </div>
+
+          {/* Manage Data Precision */}
+          {onOpenDataPrecision && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenDataPrecision();
+              }}
+              className="w-full p-2.5 rounded-2xl bg-slate-50 hover:bg-slate-100/90 border border-slate-200/80 flex items-center justify-between text-xs text-slate-800 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-[#ff3b69] shrink-0" />
+                <span className="font-semibold text-[11px]">Manage Data Precision</span>
+              </div>
+              <span className="text-[10px] text-slate-500 font-medium">
+                Decimals · Timestamps · Cache →
+              </span>
+            </button>
+          )}
 
           {/* Avatar Preview & Randomizer */}
           <div className="flex flex-col items-center gap-2">

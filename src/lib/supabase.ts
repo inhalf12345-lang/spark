@@ -39,13 +39,16 @@ export function isLikelyApiKey(str: string): boolean {
 }
 
 export const DEFAULT_PROJECT_URL = 'https://zyyaeuiprnrezuuqdmyt.supabase.co';
+export const DEFAULT_ANON_KEY = 'sb_publishable_FQzPhZZQolCGuGpGSO_HcA__P41b0DG';
 
 export function getOneClickShareableUrl(): string | null {
   const { url, anonKey } = getSavedCredentials();
-  if (!url || !anonKey || !isValidHttpUrl(url) || anonKey.length < 10) return null;
+  const targetUrl = url || DEFAULT_PROJECT_URL;
+  const targetKey = anonKey || DEFAULT_ANON_KEY;
+  if (!targetUrl || !targetKey || !isValidHttpUrl(targetUrl) || targetKey.length < 10) return null;
   if (typeof window === 'undefined') return null;
   const baseUrl = window.location.origin + window.location.pathname;
-  return `${baseUrl}?sb_url=${encodeURIComponent(url)}&sb_key=${encodeURIComponent(anonKey)}`;
+  return `${baseUrl}?sb_url=${encodeURIComponent(targetUrl)}&sb_key=${encodeURIComponent(targetKey)}`;
 }
 
 export function getSupabaseConfigState(): {
@@ -54,11 +57,27 @@ export function getSupabaseConfigState(): {
   detectedUrlIsKey: boolean;
   isConfigured: boolean;
 } {
-  if (typeof window !== 'undefined' && window.location?.search) {
+  // Check for auto-configuration parameters from URL search or hash fragment
+  if (typeof window !== 'undefined') {
     try {
-      const params = new URLSearchParams(window.location.search);
-      const paramUrl = params.get('sb_url')?.trim();
-      const paramKey = params.get('sb_key')?.trim();
+      let paramUrl = '';
+      let paramKey = '';
+
+      if (window.location?.search) {
+        const searchParams = new URLSearchParams(window.location.search);
+        paramUrl = searchParams.get('sb_url')?.trim() || '';
+        paramKey = searchParams.get('sb_key')?.trim() || '';
+      }
+
+      if ((!paramUrl || !paramKey) && window.location?.hash && window.location.hash.includes('?')) {
+        const hashQuery = window.location.hash.split('?')[1];
+        if (hashQuery) {
+          const hashParams = new URLSearchParams(hashQuery);
+          paramUrl = paramUrl || hashParams.get('sb_url')?.trim() || '';
+          paramKey = paramKey || hashParams.get('sb_key')?.trim() || '';
+        }
+      }
+
       if (paramUrl && paramKey && isValidHttpUrl(paramUrl)) {
         localStorage.setItem(STORAGE_KEY_URL, sanitizeSupabaseUrl(paramUrl));
         localStorage.setItem(STORAGE_KEY_ANON, paramKey);
@@ -66,9 +85,12 @@ export function getSupabaseConfigState(): {
         const cleanSearch = new URLSearchParams(window.location.search);
         cleanSearch.delete('sb_url');
         cleanSearch.delete('sb_key');
-        const newRelativePathQuery =
-          window.location.pathname + (cleanSearch.toString() ? `?${cleanSearch.toString()}` : '') + window.location.hash;
-        window.history.replaceState(null, '', newRelativePathQuery);
+        const newSearchStr = cleanSearch.toString() ? `?${cleanSearch.toString()}` : '';
+        const cleanHash = window.location.hash.includes('?')
+          ? window.location.hash.split('?')[0]
+          : window.location.hash;
+        const newRelativePath = window.location.pathname + newSearchStr + cleanHash;
+        window.history.replaceState(null, '', newRelativePath);
       }
     } catch {}
   }
@@ -85,9 +107,12 @@ export function getSupabaseConfigState(): {
   const localUrl = localStorage.getItem(STORAGE_KEY_URL)?.trim() || '';
   const localAnon = localStorage.getItem(STORAGE_KEY_ANON)?.trim() || '';
 
-  // Use configured URL or default project URL
-  const rawUrl = localUrl || envUrl || DEFAULT_PROJECT_URL;
-  const rawAnon = localAnon || envAnon;
+  // Use configured URL or default project URL and anon key
+  const validLocalUrl = localUrl && isValidHttpUrl(localUrl) && !isLikelyApiKey(localUrl) ? localUrl : '';
+  const validLocalAnon = localAnon && isLikelyApiKey(localAnon) ? localAnon : '';
+
+  const rawUrl = validLocalUrl || envUrl || DEFAULT_PROJECT_URL;
+  const rawAnon = validLocalAnon || envAnon || DEFAULT_ANON_KEY;
   const detectedUrlIsKey = isLikelyApiKey(rawUrl);
 
   return {

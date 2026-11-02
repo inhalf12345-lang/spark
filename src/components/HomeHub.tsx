@@ -13,9 +13,18 @@ import {
   UserPlus,
   Loader2,
   Users,
+  Trash2,
+  SlidersHorizontal,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 import { DailyQuest, PublicUserProfile, RealConversation, UserProfile, UserStory } from '../types';
 import { searchRealUsers, buildDirectUsernameProfile } from '../lib/chatService';
+import {
+  formatTimestampPrecision,
+  getPrecisionSettings,
+  DataPrecisionSettings,
+} from '../lib/precisionService';
 
 interface HomeHubProps {
   profile: UserProfile;
@@ -33,6 +42,8 @@ interface HomeHubProps {
   onViewStory: (story: UserStory) => void;
   onClaimQuest: (questId: string) => void;
   onOpenCreateGroup?: () => void;
+  onDeleteGroup?: (conversationId: string) => Promise<void> | void;
+  onOpenDataPrecision?: () => void;
 }
 
 export const HomeHub: React.FC<HomeHubProps> = ({
@@ -51,11 +62,30 @@ export const HomeHub: React.FC<HomeHubProps> = ({
   onViewStory,
   onClaimQuest,
   onOpenCreateGroup,
+  onDeleteGroup,
+  onOpenDataPrecision,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [peopleSearchResults, setPeopleSearchResults] = useState<PublicUserProfile[]>([]);
   const [activeTab, setActiveTab] = useState<'chats' | 'stories' | 'quests' | 'shop'>('chats');
   const [isQuestsExpanded, setIsQuestsExpanded] = useState(false);
+  const [groupToDelete, setGroupToDelete] = useState<RealConversation | null>(null);
+  const [isDeletingGroup, setIsDeletingGroup] = useState(false);
+
+  // Precision Settings
+  const [precisionSettings, setPrecisionSettings] = useState<DataPrecisionSettings>(getPrecisionSettings());
+
+  useEffect(() => {
+    const handlePrecisionChange = (e: any) => {
+      if (e.detail) {
+        setPrecisionSettings(e.detail);
+      } else {
+        setPrecisionSettings(getPrecisionSettings());
+      }
+    };
+    window.addEventListener('spark_precision_changed', handlePrecisionChange);
+    return () => window.removeEventListener('spark_precision_changed', handlePrecisionChange);
+  }, []);
 
   useEffect(() => {
     const clean = searchQuery.trim().replace(/^@+/, '');
@@ -112,19 +142,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
 
   const formatRelativeTime = (isoString?: string) => {
     if (!isoString) return 'Just now';
-    try {
-      const diffMs = Date.now() - new Date(isoString).getTime();
-      const mins = Math.floor(diffMs / 60000);
-      if (mins < 1) return 'Just now';
-      if (mins < 60) return `${mins}m`;
-      const hours = Math.floor(mins / 60);
-      if (hours < 24) return `${hours}h`;
-      const days = Math.floor(hours / 24);
-      if (days === 1) return 'Yesterday';
-      return `${days}d`;
-    } catch {
-      return '';
-    }
+    return formatTimestampPrecision(isoString, precisionSettings);
   };
 
   return (
@@ -554,8 +572,23 @@ export const HomeHub: React.FC<HomeHubProps> = ({
 
                   {/* Right: Flame streak or Group badge */}
                   {conv.is_group ? (
-                    <div className="flex items-center gap-1 text-[11px] font-bold text-slate-400 shrink-0">
-                      <Users className="w-3.5 h-3.5 text-[#ff3b69]" />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {conv.created_by === profile.id && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGroupToDelete(conv);
+                          }}
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                          title="Delete group (Creator only)"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <div className="flex items-center gap-1 text-[11px] font-bold text-slate-400">
+                        <Users className="w-3.5 h-3.5 text-[#ff3b69]" />
+                      </div>
                     </div>
                   ) : (
                     <div
@@ -632,6 +665,68 @@ export const HomeHub: React.FC<HomeHubProps> = ({
           </button>
         </nav>
       </div>
+
+      {/* Group Deletion Confirmation Dialog */}
+      {groupToDelete && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => {
+            if (!isDeletingGroup) setGroupToDelete(null);
+          }}
+        >
+          <div
+            className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-slate-100 text-center space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-base text-slate-900">
+                Delete &quot;{groupToDelete.name || 'Group Chat'}&quot;?
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                As the group creator, deleting this group will permanently remove it and all message history for all members.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingGroup}
+                onClick={() => setGroupToDelete(null)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingGroup}
+                onClick={async () => {
+                  if (onDeleteGroup && groupToDelete) {
+                    setIsDeletingGroup(true);
+                    try {
+                      await onDeleteGroup(groupToDelete.id);
+                    } finally {
+                      setIsDeletingGroup(false);
+                      setGroupToDelete(null);
+                    }
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+              >
+                {isDeletingGroup ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <span>Delete Group</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

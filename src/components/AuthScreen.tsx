@@ -14,6 +14,8 @@ import {
   ChevronLeft,
   Key,
   Check,
+  Copy,
+  Smartphone,
 } from 'lucide-react';
 import {
   getSupabase,
@@ -24,6 +26,7 @@ import {
   isLikelyApiKey,
   getSupabaseConfigState,
   DEFAULT_PROJECT_URL,
+  getOneClickShareableUrl,
 } from '../lib/supabase';
 import { UserProfile } from '../types';
 import {
@@ -99,6 +102,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     savedCreds.anonKey || (configState.detectedUrlIsKey ? configState.rawUrl : '')
   );
   const [configToast, setConfigToast] = useState<string | null>(null);
+  const [copiedShareLink, setCopiedShareLink] = useState(false);
 
   // Authenticated user ID during onboarding
   const [pendingUserId, setPendingUserId] = useState<string | null>(initialUserId || null);
@@ -1689,6 +1693,38 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   Close
                 </button>
               </div>
+
+              {getOneClickShareableUrl() && (
+                <div className="pt-2 border-t border-slate-200/60">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const link = getOneClickShareableUrl();
+                      if (link) {
+                        navigator.clipboard.writeText(link);
+                        setCopiedShareLink(true);
+                        setTimeout(() => setCopiedShareLink(false), 2500);
+                      }
+                    }}
+                    className="w-full py-1.5 px-3 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    {copiedShareLink ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>✓ Copied Auto-Connect Link!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Copy 1-Click Link for Other Devices</span>
+                      </>
+                    )}
+                  </button>
+                  <p className="text-[10px] text-slate-400 text-center mt-1">
+                    Send this link to any device to automatically connect without typing credentials!
+                  </p>
+                </div>
+              )}
             </form>
           )}
         </div>
