@@ -725,6 +725,9 @@ export function getInitialDemoMessages(userId: string, friendId: string): ChatMe
 
 // Weekly Leaderboard Builder: sorts current user and friends by weekly_coins
 export function getWeeklyLeaderboard(profile: UserProfile, friends: FriendOrb[]): LeaderboardEntry[] {
+  const safeProfile = profile || DEFAULT_STARTER_PROFILE;
+  const safeFriends = Array.isArray(friends) ? friends : [];
+
   const list: {
     user_id: string;
     username: string;
@@ -735,27 +738,31 @@ export function getWeeklyLeaderboard(profile: UserProfile, friends: FriendOrb[])
     equipped_frame: string;
   }[] = [
     {
-      user_id: profile.id,
-      username: profile.username,
-      avatar_url: profile.avatar_url,
-      weekly_coins: profile.weekly_coins || 68,
-      streak_days: profile.streak_days,
+      user_id: safeProfile.id || 'current_user',
+      username: safeProfile.username || 'You',
+      avatar_url: safeProfile.avatar_url || '',
+      weekly_coins: typeof safeProfile.weekly_coins === 'number' ? safeProfile.weekly_coins : 68,
+      streak_days: safeProfile.streak_days || 1,
       is_current_user: true,
-      equipped_frame: profile.equipped_frame || 'frame_pulsar',
+      equipped_frame: safeProfile.equipped_frame || 'frame_pulsar',
     },
-    ...friends.map((f) => {
-      // derive believable weekly coin score from streak
-      const baselineCoins = f.streak_days * 8 + (f.username.charCodeAt(0) % 30);
-      return {
-        user_id: f.id,
-        username: f.username,
-        avatar_url: f.avatar_url,
-        weekly_coins: baselineCoins,
-        streak_days: f.streak_days,
-        is_current_user: false,
-        equipped_frame: f.equipped_frame || 'frame_pulsar',
-      };
-    }),
+    ...safeFriends
+      .filter((f) => Boolean(f))
+      .map((f) => {
+        const uname = f.username || 'Friend';
+        const streak = typeof f.streak_days === 'number' ? f.streak_days : 1;
+        const charCode = uname.length > 0 ? uname.charCodeAt(0) : 70;
+        const baselineCoins = streak * 8 + (charCode % 30);
+        return {
+          user_id: f.id || Math.random().toString(),
+          username: uname,
+          avatar_url: f.avatar_url || '',
+          weekly_coins: baselineCoins,
+          streak_days: streak,
+          is_current_user: false,
+          equipped_frame: f.equipped_frame || 'frame_pulsar',
+        };
+      }),
   ];
 
   // Sort descending by weekly coins

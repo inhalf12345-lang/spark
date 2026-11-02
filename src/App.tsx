@@ -110,6 +110,11 @@ export default function App() {
 
   // 1. Initial Session Restoration & Recovery Hash Listener
   useEffect(() => {
+    // Safety timeout: never leave user trapped on restoring splash for longer than 2.5 seconds
+    const safetyTimer = setTimeout(() => {
+      setIsSessionInitializing(false);
+    }, 2500);
+
     const hash = window.location.hash;
     if (hash && hash.includes('type=recovery')) {
       setAuthView('reset_password');
@@ -138,6 +143,7 @@ export default function App() {
         setIsAuthenticated(false);
       }
       setIsSessionInitializing(false);
+      clearTimeout(safetyTimer);
       return;
     }
 
@@ -239,6 +245,7 @@ export default function App() {
     });
 
     return () => {
+      clearTimeout(safetyTimer);
       subscription.unsubscribe();
     };
   }, [loadConversations]);
@@ -527,15 +534,17 @@ export default function App() {
 
   const leaderboardEntries = getWeeklyLeaderboard(
     profile,
-    conversations.map((c) => ({
-      id: c.other_user.id,
-      username: c.other_user.username,
-      avatar_url: c.other_user.avatar_url,
-      streak_days: c.other_user.streak_days || 1,
-      is_online: true,
-      orbit_angle: 45,
-      distance: 140,
-    }))
+    conversations
+      .filter((c) => Boolean(c && c.other_user))
+      .map((c) => ({
+        id: c.other_user?.id || c.id,
+        username: c.other_user?.username || 'Friend',
+        avatar_url: c.other_user?.avatar_url || '',
+        streak_days: c.other_user?.streak_days || 1,
+        is_online: true,
+        orbit_angle: 45,
+        distance: 140,
+      }))
   );
 
   // Splash Loading State
@@ -555,6 +564,12 @@ export default function App() {
               Restoring session...
             </p>
           </div>
+          <button
+            onClick={() => setIsSessionInitializing(false)}
+            className="mt-3 text-xs text-slate-500 hover:text-slate-800 underline font-medium cursor-pointer transition-colors"
+          >
+            Taking a while? Click here to sign in
+          </button>
         </div>
       </div>
     );
