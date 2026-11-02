@@ -1,0 +1,81 @@
+name: Deploy Spark to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Build production bundle
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          npm run build
+          cp dist/index.html dist/404.html 2>/dev/null || true
+          touch dist/.nojekyll
+          mkdir -p public/gh-pages-bundle
+          for f in dist/assets/*.js; do [ -e "$f" ] && cp "$f" public/gh-pages-bundle/app.js && break; done
+          for f in dist/assets/*.css; do [ -e "$f" ] && cp "$f" public/gh-pages-bundle/app.css && break; done
+
+      - name: Commit compiled bundle for main-branch GitHub Pages
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          touch .nojekyll
+          git add -f public/gh-pages-bundle/app.js public/gh-pages-bundle/app.css .nojekyll 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "chore: update precompiled GitHub Pages bundle [skip ci]"
+          git push origin HEAD:${GITHUB_REF_NAME} || true
+
+      - name: Publish to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          force_orphan: true
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+        continue-on-error: true
+
+      - name: Upload build artifact
+        uses: actions/upload-pages-artifact@v3
+        continue-on-error: true
+        with:
+          path: './dist'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true

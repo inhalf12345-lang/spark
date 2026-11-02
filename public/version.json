@@ -1,0 +1,15 @@
+{
+  "version": "2.5.0-real-supabase",
+  "mode": "production-real-data-only",
+  "dummyEntriesRemoved": true,
+  "supabaseProject": "https://zyyaeuiprnrezuuqdmyt.supabase.co",
+  "tablesSynced": [
+    "profiles",
+    "conversations",
+    "conversation_members",
+    "messages",
+    "daily_quests",
+    "stories",
+    "user_crypto_keys"
+  ]
+}
