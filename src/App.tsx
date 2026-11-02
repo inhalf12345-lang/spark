@@ -58,9 +58,7 @@ import { DataPrecisionModal } from './components/DataPrecisionModal';
 
 export default function App() {
   // Session & Authentication state (synchronously restored so user stays signed in until explicit Sign Out)
-  const [isSessionInitializing, setIsSessionInitializing] = useState<boolean>(
-    () => !Boolean(getPersistentSignedInProfile())
-  );
+  const [isSessionInitializing, setIsSessionInitializing] = useState<boolean>(false);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
     () => Boolean(getPersistentSignedInProfile())
   );
