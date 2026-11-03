@@ -1265,6 +1265,68 @@ export async function createRealGroupConversation(
 }
 
 /**
+ * Deletes a real conversation (1-to-1 chat or group).
+ * Cleans up messages, memberships, conversation record, and local cache.
+ */
+export async function deleteRealConversation(
+  conversationId: string,
+  requesterUserId: string
+): Promise<{ success: boolean; message: string }> {
+  if (!conversationId) {
+    throw new Error('Invalid conversation ID.');
+  }
+
+  const supabase = getSupabase();
+  if (isSupabaseConfigured() && supabase) {
+    try {
+      await ensureSupabaseAuthSession();
+
+      // Delete messages in this conversation
+      await supabase.from('messages').delete().eq('conversation_id', conversationId);
+
+      // Delete conversation membership
+      await supabase.from('conversation_members').delete().eq('conversation_id', conversationId);
+
+      // Delete conversation row
+      await supabase.from('conversations').delete().eq('id', conversationId);
+    } catch (e) {
+      console.warn('Supabase delete conversation note:', e);
+    }
+  }
+
+  // Clear from local user conversations
+  const localConvs = getLocalStoredConversations(requesterUserId);
+  const updatedLocal = localConvs.filter((c) => c.id !== conversationId);
+  saveLocalStoredConversations(requesterUserId, updatedLocal);
+
+  // Clear cached messages
+  saveCachedMessages(conversationId, []);
+
+  // Also clean up from global storage if present
+  try {
+    const rawGlobal = localStorage.getItem('spark_local_conversations_v1');
+    if (rawGlobal) {
+      const parsed = JSON.parse(rawGlobal);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((c: any) => c.id !== conversationId);
+        localStorage.setItem('spark_local_conversations_v1', JSON.stringify(filtered));
+      }
+    }
+  } catch {}
+
+  // Dispatch event safely so any open listeners update
+  try {
+    if (typeof window !== 'undefined' && typeof window.CustomEvent === 'function') {
+      window.dispatchEvent(
+        new CustomEvent('spark_conversation_deleted', { detail: { conversationId } })
+      );
+    }
+  } catch {}
+
+  return { success: true, message: 'Conversation deleted successfully.' };
+}
+
+/**
  * Deletes a real group conversation.
  * Strictly enforces that ONLY the person who created the group (creatorId / created_by) can delete it.
  */
@@ -1297,9 +1359,6 @@ export async function deleteRealGroupConversation(
       .maybeSingle();
 
     if (dbConv) {
-      if (!dbConv.is_group) {
-        throw new Error('This action is only valid for group conversations.');
-      }
       if (dbConv.created_by && dbConv.created_by !== requesterUserId) {
         throw new Error('Permission denied: Only the person who created this group can delete it.');
       }

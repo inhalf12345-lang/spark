@@ -43,6 +43,7 @@ interface HomeHubProps {
   onClaimQuest: (questId: string) => void;
   onOpenCreateGroup?: () => void;
   onDeleteGroup?: (conversationId: string) => Promise<void> | void;
+  onDeleteConversation?: (conversationId: string) => Promise<void> | void;
   onOpenDataPrecision?: () => void;
 }
 
@@ -63,14 +64,15 @@ export const HomeHub: React.FC<HomeHubProps> = ({
   onClaimQuest,
   onOpenCreateGroup,
   onDeleteGroup,
+  onDeleteConversation,
   onOpenDataPrecision,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [peopleSearchResults, setPeopleSearchResults] = useState<PublicUserProfile[]>([]);
   const [activeTab, setActiveTab] = useState<'chats' | 'stories' | 'quests' | 'shop'>('chats');
   const [isQuestsExpanded, setIsQuestsExpanded] = useState(false);
-  const [groupToDelete, setGroupToDelete] = useState<RealConversation | null>(null);
-  const [isDeletingGroup, setIsDeletingGroup] = useState(false);
+  const [conversationToDelete, setConversationToDelete] = useState<RealConversation | null>(null);
+  const [isDeletingConversation, setIsDeletingConversation] = useState(false);
 
   // Precision Settings
   const [precisionSettings, setPrecisionSettings] = useState<DataPrecisionSettings>(getPrecisionSettings());
@@ -570,7 +572,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                     </div>
                   </div>
 
-                  {/* Right: Flame streak or Group badge */}
+                  {/* Right: Flame streak or Group badge + Delete conversation action */}
                   {conv.is_group ? (
                     <div className="flex items-center gap-1.5 shrink-0">
                       {conv.created_by === profile.id && (
@@ -578,7 +580,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setGroupToDelete(conv);
+                            setConversationToDelete(conv);
                           }}
                           className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
                           title="Delete group (Creator only)"
@@ -591,12 +593,25 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div
-                      className="flex items-center gap-0.5 text-xs font-bold text-rose-500 shrink-0"
-                      title={`${conv.other_user.streak_days || 1} days streak`}
-                    >
-                      <Flame className="w-3.5 h-3.5 fill-rose-500" />
-                      <span className="font-mono-numbers">{conv.other_user.streak_days || 1}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConversationToDelete(conv);
+                        }}
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                        title="Delete chat"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                      <div
+                        className="flex items-center gap-0.5 text-xs font-bold text-rose-500 shrink-0"
+                        title={`${conv.other_user?.streak_days || 1} days streak`}
+                      >
+                        <Flame className="w-3.5 h-3.5 fill-rose-500" />
+                        <span className="font-mono-numbers">{conv.other_user?.streak_days || 1}</span>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -666,12 +681,12 @@ export const HomeHub: React.FC<HomeHubProps> = ({
         </nav>
       </div>
 
-      {/* Group Deletion Confirmation Dialog */}
-      {groupToDelete && (
+      {/* Conversation / Group Deletion Confirmation Dialog */}
+      {conversationToDelete && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
           onClick={() => {
-            if (!isDeletingGroup) setGroupToDelete(null);
+            if (!isDeletingConversation) setConversationToDelete(null);
           }}
         >
           <div
@@ -683,44 +698,52 @@ export const HomeHub: React.FC<HomeHubProps> = ({
             </div>
             <div>
               <h3 className="font-display font-bold text-base text-slate-900">
-                Delete &quot;{groupToDelete.name || 'Group Chat'}&quot;?
+                {conversationToDelete.is_group
+                  ? `Delete "${conversationToDelete.name || 'Group Chat'}"?`
+                  : `Delete chat with @${conversationToDelete.other_user?.username || 'User'}?`}
               </h3>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                As the group creator, deleting this group will permanently remove it and all message history for all members.
+                {conversationToDelete.is_group
+                  ? 'As the group creator, deleting this group will permanently remove it and all message history for all members.'
+                  : 'This conversation and all its messages will be removed from your chat list.'}
               </p>
             </div>
             <div className="flex items-center gap-2 pt-2">
               <button
                 type="button"
-                disabled={isDeletingGroup}
-                onClick={() => setGroupToDelete(null)}
+                disabled={isDeletingConversation}
+                onClick={() => setConversationToDelete(null)}
                 className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                disabled={isDeletingGroup}
+                disabled={isDeletingConversation}
                 onClick={async () => {
-                  if (onDeleteGroup && groupToDelete) {
-                    setIsDeletingGroup(true);
+                  if (conversationToDelete) {
+                    setIsDeletingConversation(true);
                     try {
-                      await onDeleteGroup(groupToDelete.id);
+                      if (onDeleteConversation) {
+                        await onDeleteConversation(conversationToDelete.id);
+                      } else if (onDeleteGroup && conversationToDelete.is_group) {
+                        await onDeleteGroup(conversationToDelete.id);
+                      }
                     } finally {
-                      setIsDeletingGroup(false);
-                      setGroupToDelete(null);
+                      setIsDeletingConversation(false);
+                      setConversationToDelete(null);
                     }
                   }
                 }}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
               >
-                {isDeletingGroup ? (
+                {isDeletingConversation ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     <span>Deleting...</span>
                   </>
                 ) : (
-                  <span>Delete Group</span>
+                  <span>{conversationToDelete.is_group ? 'Delete Group' : 'Delete Chat'}</span>
                 )}
               </button>
             </div>

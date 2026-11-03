@@ -195,11 +195,25 @@ const LEGACY_DUMMY_USERNAMES = new Set([
 ]);
 
 export function isDummyUserOrConversation(id?: string, username?: string): boolean {
-  if (id && (LEGACY_DUMMY_IDS.has(id) || id.startsWith('test_user_'))) {
+  if (
+    id &&
+    (LEGACY_DUMMY_IDS.has(id) ||
+      id.startsWith('test_user_') ||
+      id.startsWith('testuser_') ||
+      id.startsWith('temp_'))
+  ) {
     return true;
   }
   const cleanUname = username ? username.trim().replace(/^@+/, '').toLowerCase() : '';
-  if (cleanUname && (LEGACY_DUMMY_USERNAMES.has(cleanUname) || cleanUname.startsWith('arch_'))) {
+  if (
+    cleanUname &&
+    (LEGACY_DUMMY_USERNAMES.has(cleanUname) ||
+      cleanUname.startsWith('arch_') ||
+      cleanUname.startsWith('testuser_') ||
+      cleanUname.startsWith('temp_') ||
+      cleanUname === 'spark_sender' ||
+      cleanUname === 'sparkuser')
+  ) {
     return true;
   }
   return false;

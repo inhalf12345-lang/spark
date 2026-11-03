@@ -37,6 +37,7 @@ import {
   uploadGroupChatImage,
   resolveGroupMediaUrl,
   deleteRealGroupConversation,
+  deleteRealConversation,
 } from '../lib/chatService';
 import {
   formatTimestampPrecision,
@@ -74,6 +75,7 @@ interface ChatViewProps {
   onUpdateCoins: (earned: number) => void;
   originCoords?: { x: number; y: number } | null;
   onGroupDeleted?: (conversationId: string) => void;
+  onDeleteChat?: (conversationId: string) => void;
 }
 
 // Subcomponent to resolve and display private Supabase Storage images asynchronously
@@ -160,6 +162,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onUpdateCoins,
   originCoords,
   onGroupDeleted,
+  onDeleteChat,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -181,6 +184,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [isDeletingGroup, setIsDeletingGroup] = useState(false);
   const [deleteGroupError, setDeleteGroupError] = useState<string | null>(null);
   const [groupCreatorId, setGroupCreatorId] = useState<string | undefined>(friend.created_by);
+
+  // Direct 1-on-1 Chat Deletion states
+  const [showDeleteDirectChatConfirm, setShowDeleteDirectChatConfirm] = useState(false);
+  const [isDeletingDirectChat, setIsDeletingDirectChat] = useState(false);
 
   // Data Precision Settings
   const [precisionSettings, setPrecisionSettings] = useState<DataPrecisionSettings>(getPrecisionSettings());
@@ -753,6 +760,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
+  const handleDeleteDirectChat = async () => {
+    setIsDeletingDirectChat(true);
+    try {
+      await deleteRealConversation(activeConvId, profile.id);
+      setShowDeleteDirectChatConfirm(false);
+      if (onDeleteChat) {
+        onDeleteChat(activeConvId);
+      }
+      handleBack();
+    } catch (err: any) {
+      console.warn('Delete chat warning:', err);
+      setShowDeleteDirectChatConfirm(false);
+      handleBack();
+    } finally {
+      setIsDeletingDirectChat(false);
+    }
+  };
+
   const formatMessageTime = (isoString: string) => {
     if (!isoString) return '';
     return formatTimestampPrecision(isoString, precisionSettings);
@@ -869,15 +894,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           </div>
 
-          {/* Right: Call Actions + Group Info */}
+          {/* Right: Call Actions + Delete Chat / Group Info */}
           <div className="flex items-center gap-1.5 text-[#ff3b69]">
-            {friend.is_group && (
+            {friend.is_group ? (
               <button
                 onClick={() => setIsGroupInfoOpen(true)}
                 className="w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90 text-slate-600 hover:text-[#ff3b69]"
                 title="Group Info & Creator Settings"
               >
                 <Info className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowDeleteDirectChatConfirm(true)}
+                className="w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90 text-slate-400 hover:text-rose-600"
+                title="Delete Chat"
+              >
+                <Trash2 className="w-4 h-4" />
               </button>
             )}
             <button
@@ -1431,6 +1465,58 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="px-4 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs transition-colors"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Direct Chat Deletion Confirmation Dialog */}
+      {showDeleteDirectChatConfirm && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => {
+            if (!isDeletingDirectChat) setShowDeleteDirectChatConfirm(false);
+          }}
+        >
+          <div
+            className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-slate-100 text-center space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-base text-slate-900">
+                Delete Chat with @{friend.username}?
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                This will delete this conversation and all messages from your chat list.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingDirectChat}
+                onClick={() => setShowDeleteDirectChatConfirm(false)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingDirectChat}
+                onClick={handleDeleteDirectChat}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+              >
+                {isDeletingDirectChat ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <span>Delete Chat</span>
+                )}
               </button>
             </div>
           </div>

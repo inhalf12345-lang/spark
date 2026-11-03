@@ -409,7 +409,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     try {
       const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
-      if (supabase && !isUsernameLogin) {
+      if (isUsernameLogin) {
+        // Signing in with @username: look up the user's registered account in Supabase
+        await completeLocalSignInOrSetup(rawInput, password);
+        setIsLoading(false);
+        return;
+      }
+
+      if (supabase) {
         const { data, error } = await supabase.auth.signInWithPassword({
           email: cleanEmail,
           password,
@@ -424,36 +431,38 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
         if (error) {
           const msg = (error.message || '').toLowerCase();
-          // If the user hasn't registered in Supabase yet, attempt seamless registration in background
-          if (msg.includes('invalid login credentials') || msg.includes('invalid_grant')) {
-            const existingLocal = findLocalAccountByEmail(cleanEmail);
-            if (!existingLocal && password.length >= 6) {
-              try {
-                const { data: signUpData } = await supabase.auth.signUp({
-                  email: cleanEmail,
-                  password,
-                });
-                if (signUpData?.user) {
-                  await completeLocalSignInOrSetup(cleanEmail, password, signUpData.user.id);
-                  setIsLoading(false);
-                  return;
-                }
-              } catch {}
-            }
+          if (msg.includes('email not confirmed')) {
+            try {
+              await supabase.auth.resend({
+                type: 'signup',
+                email: cleanEmail,
+              });
+            } catch {}
+            setPendingUserEmail(cleanEmail);
+            setView('email_verification');
+            setErrorMessage('Please verify your email first. A 6-digit confirmation code was sent to your email.');
+            setIsLoading(false);
+            return;
           }
+
+          setErrorMessage(
+            error.message ||
+              'Invalid login credentials. Please check your email and password, or use Magic Link / OTP.'
+          );
+          setIsLoading(false);
+          return;
         }
       }
 
-      // Cloud / Local fallback sign-in so existing users on any device are restored
-      await completeLocalSignInOrSetup(rawInput, password);
-    } catch {
-      await completeLocalSignInOrSetup(rawInput, password);
+      setErrorMessage('Unable to connect to authentication server. Please try again.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Login failed. Please check your credentials.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Magic Link / OTP handler
+  // Magic Link / OTP handler - Requires entering the OTP code
   const handleSendMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -478,18 +487,23 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         });
 
         if (!error) {
+          setPendingUserEmail(cleanEmail);
+          setView('email_verification');
           setSuccessMessage(
-            `Magic link sent to ${cleanEmail}! Or continue directly below.`
+            `A 6-digit confirmation code was sent to ${cleanEmail}. Enter the code below to complete sign in.`
           );
-          completeLocalSignInOrSetup(cleanEmail);
+          setIsLoading(false);
+          return;
+        } else {
+          setErrorMessage(error.message || 'Failed to send verification code. Please check your email address.');
           setIsLoading(false);
           return;
         }
       }
 
-      completeLocalSignInOrSetup(cleanEmail);
-    } catch {
-      completeLocalSignInOrSetup(cleanEmail);
+      setErrorMessage('Authentication server not configured.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Failed to send OTP code.');
     } finally {
       setIsLoading(false);
     }
@@ -625,6 +639,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         });
 
         if (!error && data?.user) {
+          // If email confirmation is required and not yet verified, require OTP code
+          if (!data.session && !data.user.email_confirmed_at) {
+            setPendingUserId(data.user.id);
+            setPendingUserEmail(cleanEmail);
+            setView('email_verification');
+            setSuccessMessage(
+              `Confirmation code sent to ${cleanEmail}. Enter your 6-digit code below to verify your account.`
+            );
+            setIsLoading(false);
+            return;
+          }
+
           upsertLocalAccount(cleanEmail, password, data.user.id);
           saveActiveLocalSession(data.user.id, cleanEmail);
           setPendingUserId(data.user.id);
@@ -637,7 +663,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         if (error) {
           const msg = (error.message || '').toLowerCase();
           if (msg.includes('already registered') || msg.includes('user already exists')) {
-            // Try logging in automatically with the provided password
+            // Try logging in with the provided password
             const { data: loginData, error: loginErr } = await supabase.auth.signInWithPassword({
               email: cleanEmail,
               password,
@@ -646,15 +672,24 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               await handlePostAuthUser(loginData.user, supabase);
               setIsLoading(false);
               return;
+            } else if (loginErr?.message?.toLowerCase()?.includes('email not confirmed')) {
+              setPendingUserEmail(cleanEmail);
+              setView('email_verification');
+              setErrorMessage('Account exists but email is not confirmed yet. Enter your verification code below.');
+              setIsLoading(false);
+              return;
             }
           }
+
+          setErrorMessage(error.message || 'Failed to create account. Please check your information.');
+          setIsLoading(false);
+          return;
         }
       }
 
-      // Local / fallback signup so user goes directly to Choose your username
-      completeLocalSignInOrSetup(cleanEmail, password);
-    } catch {
-      completeLocalSignInOrSetup(cleanEmail, password);
+      setErrorMessage('Unable to connect to authentication server. Please try again.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Signup failed. Please try again.');
     } finally {
       setIsLoading(false);
     }

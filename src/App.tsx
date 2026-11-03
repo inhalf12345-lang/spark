@@ -49,6 +49,7 @@ import {
   syncDailyQuestsToSupabase,
   syncStoryToSupabase,
   deleteRealGroupConversation,
+  deleteRealConversation,
   fetchActiveStoriesFromSupabase,
   fetchTodayQuestsFromSupabase,
   fetchRealLeaderboardFromSupabase,
@@ -457,18 +458,25 @@ export default function App() {
     });
   };
 
-  const handleDeleteGroup = async (conversationId: string) => {
+  const handleDeleteConversation = async (conversationId: string) => {
     try {
-      await deleteRealGroupConversation(conversationId, profile.id);
+      const targetConv = conversations.find((c) => c.id === conversationId);
+      if (targetConv?.is_group && targetConv.created_by === profile.id) {
+        await deleteRealGroupConversation(conversationId, profile.id);
+      } else {
+        await deleteRealConversation(conversationId, profile.id);
+      }
       await loadConversations(profile.id);
       if (activeConversationId === conversationId) {
         setSelectedFriend(null);
         setActiveConversationId(null);
       }
     } catch (err: any) {
-      console.error('Failed to delete group:', err);
+      console.error('Failed to delete conversation:', err);
     }
   };
+
+  const handleDeleteGroup = handleDeleteConversation;
 
   const handleGroupCreated = async (newConvId: string) => {
     await loadConversations(profile.id);
@@ -782,6 +790,7 @@ export default function App() {
             onClaimQuest={handleClaimQuest}
             onOpenCreateGroup={() => setIsCreateGroupModalOpen(true)}
             onDeleteGroup={handleDeleteGroup}
+            onDeleteConversation={handleDeleteConversation}
             onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
           />
         </main>
@@ -796,6 +805,7 @@ export default function App() {
             onUpdateCoins={handleUpdateCoins}
             originCoords={chatOriginCoords}
             onGroupDeleted={handleDeleteGroup}
+            onDeleteChat={handleDeleteConversation}
           />
         )}
       </div>
