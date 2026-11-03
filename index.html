@@ -13,37 +13,53 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
   </head>
-  <body class="bg-white text-slate-800">
-    <div id="root"></div>
+  <body class="bg-white text-slate-800" style="margin:0;padding:0;min-height:100vh;background:linear-gradient(135deg,#7ad1f9 0%,#d8b4fe 45%,#f472b6 80%,#fb7185 100%);font-family:'Plus Jakarta Sans',system-ui,-apple-system,sans-serif;">
+    <div id="root">
+      <div id="spark-boot-loader" style="min-height:100vh;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;text-align:center;">
+        <div style="background:rgba(255,255,255,0.92);backdrop-filter:blur(16px);border-radius:28px;padding:32px 28px;box-shadow:0 20px 50px rgba(15,23,42,0.12);max-width:340px;width:100%;display:flex;flex-direction:column;align-items:center;gap:14px;">
+          <div style="width:56px;height:56px;border-radius:9999px;background:linear-gradient(135deg,#ff3b69,#fb7185);display:flex;align-items:center;justify-content:center;color:#fff;font-size:26px;font-weight:900;box-shadow:0 10px 24px rgba(255,59,105,0.35);">⚡</div>
+          <div style="font-family:'Outfit',system-ui,sans-serif;font-weight:900;font-size:22px;color:#0f172a;letter-spacing:-0.02em;">Spark</div>
+          <div style="font-size:13px;font-weight:600;color:#64748b;">Opening Social Reward Chat...</div>
+        </div>
+      </div>
+    </div>
     <script>
       (function () {
         var loaded = false;
+        function loadCssChain(urls, idx) {
+          if (idx >= urls.length) return;
+          var link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = urls[idx];
+          link.onerror = function () {
+            loadCssChain(urls, idx + 1);
+          };
+          document.head.appendChild(link);
+        }
+        function loadJsChain(urls, idx) {
+          if (idx >= urls.length || window.__SPARK_MOUNTED__) return;
+          var script = document.createElement('script');
+          script.type = 'module';
+          script.crossOrigin = 'anonymous';
+          script.src = urls[idx];
+          script.onerror = function () {
+            loadJsChain(urls, idx + 1);
+          };
+          document.body.appendChild(script);
+        }
         window.__sparkLoadStaticBundle = function () {
-          if (loaded) return;
+          if (loaded || window.__SPARK_MOUNTED__) return;
           loaded = true;
-          var css = document.createElement('link');
-          css.rel = 'stylesheet';
-          css.href = './public/gh-pages-bundle/app.css';
-          css.onerror = function () {
-            var altCss = document.createElement('link');
-            altCss.rel = 'stylesheet';
-            altCss.href = './assets/app.css';
-            document.head.appendChild(altCss);
-          };
-          document.head.appendChild(css);
-
-          var js = document.createElement('script');
-          js.type = 'module';
-          js.crossOrigin = 'anonymous';
-          js.src = './public/gh-pages-bundle/app.js';
-          js.onerror = function () {
-            var altJs = document.createElement('script');
-            altJs.type = 'module';
-            altJs.crossOrigin = 'anonymous';
-            altJs.src = './assets/app.js';
-            document.body.appendChild(altJs);
-          };
-          document.body.appendChild(js);
+          loadCssChain([
+            './public/gh-pages-bundle/app.css',
+            './gh-pages-bundle/app.css',
+            './assets/app.css'
+          ], 0);
+          loadJsChain([
+            './public/gh-pages-bundle/app.js',
+            './gh-pages-bundle/app.js',
+            './assets/app.js'
+          ], 0);
         };
       })();
     </script>
@@ -52,17 +68,17 @@
       (function () {
         var isViteDev = Boolean(document.querySelector('script[src*="@vite/client"]'));
         var hasRawTsx = Boolean(document.querySelector('script[src*="/src/main.tsx"]'));
-        if (!isViteDev && hasRawTsx && window.location.hostname.indexOf('github.io') !== -1) {
+        if (!isViteDev && hasRawTsx) {
           window.__sparkLoadStaticBundle();
         } else if (!isViteDev) {
           setTimeout(function () {
-            var root = document.getElementById('root');
-            if (root && !root.hasChildNodes() && window.__sparkLoadStaticBundle) {
+            if (!window.__SPARK_MOUNTED__ && window.__sparkLoadStaticBundle) {
               window.__sparkLoadStaticBundle();
             }
-          }, 1500);
+          }, 2000);
         }
       })();
     </script>
   </body>
 </html>
+

@@ -33,7 +33,6 @@ export function isLikelyApiKey(str: string): boolean {
   return (
     trimmed.startsWith('eyJ') ||
     trimmed.startsWith('sb_publishable_') ||
-    trimmed.startsWith('sb_secret_') ||
     (trimmed.split('.').length === 3 && trimmed.length > 40)
   );
 }
@@ -78,7 +77,7 @@ export function getSupabaseConfigState(): {
         }
       }
 
-      if (paramUrl && paramKey && isValidHttpUrl(paramUrl)) {
+      if (paramUrl && paramKey && isValidHttpUrl(paramUrl) && isLikelyApiKey(paramKey)) {
         localStorage.setItem(STORAGE_KEY_URL, sanitizeSupabaseUrl(paramUrl));
         localStorage.setItem(STORAGE_KEY_ANON, paramKey);
         // Clean URL query parameters smoothly without reloading
@@ -95,16 +94,6 @@ export function getSupabaseConfigState(): {
     } catch {}
   }
 
-  const metaEnv = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
-  const envUrl =
-    typeof metaEnv.VITE_SUPABASE_URL === 'string'
-      ? metaEnv.VITE_SUPABASE_URL.trim()
-      : '';
-  const envAnon =
-    typeof metaEnv.VITE_SUPABASE_ANON_KEY === 'string'
-      ? metaEnv.VITE_SUPABASE_ANON_KEY.trim()
-      : '';
-
   let localUrl = '';
   let localAnon = '';
   try {
@@ -112,12 +101,12 @@ export function getSupabaseConfigState(): {
     localAnon = localStorage.getItem(STORAGE_KEY_ANON)?.trim() || '';
   } catch {}
 
-  // Use configured URL or default project URL and anon key
+  // Use configured valid URL/key from localStorage or built-in defaults
   const validLocalUrl = localUrl && isValidHttpUrl(localUrl) && !isLikelyApiKey(localUrl) ? localUrl : '';
   const validLocalAnon = localAnon && isLikelyApiKey(localAnon) ? localAnon : '';
 
-  const rawUrl = validLocalUrl || envUrl || DEFAULT_PROJECT_URL;
-  const rawAnon = validLocalAnon || envAnon || DEFAULT_ANON_KEY;
+  const rawUrl = validLocalUrl || DEFAULT_PROJECT_URL;
+  const rawAnon = validLocalAnon || DEFAULT_ANON_KEY;
   const detectedUrlIsKey = isLikelyApiKey(rawUrl);
 
   return {
@@ -128,7 +117,7 @@ export function getSupabaseConfigState(): {
   };
 }
 
-// Default to env vars if present, otherwise check localStorage
+// Default to built-in credentials, or localStorage override if valid
 export function getSavedCredentials(): { url: string; anonKey: string } {
   const { rawUrl, rawAnon, detectedUrlIsKey } = getSupabaseConfigState();
 
@@ -141,13 +130,26 @@ export function getSavedCredentials(): { url: string; anonKey: string } {
 let supabaseInstance: SupabaseClient | null = null;
 let currentConfigKey = '';
 
-const safeBrowserFetch: typeof fetch = (...args: Parameters<typeof fetch>) => {
-  const fn = typeof globalThis !== 'undefined' && typeof globalThis.fetch === 'function'
-    ? globalThis.fetch.bind(globalThis)
-    : typeof window !== 'undefined' && typeof window.fetch === 'function'
-    ? window.fetch.bind(window)
-    : fetch;
-  return fn(...args);
+const safeBrowserFetch: typeof fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  const fn =
+    typeof globalThis !== 'undefined' && typeof globalThis.fetch === 'function'
+      ? globalThis.fetch.bind(globalThis)
+      : typeof window !== 'undefined' && typeof window.fetch === 'function'
+      ? window.fetch.bind(window)
+      : fetch;
+
+  if (init && typeof init === 'object') {
+    const cleanInit: RequestInit = { ...init };
+    if (
+      cleanInit.signal &&
+      typeof AbortSignal !== 'undefined' &&
+      !(cleanInit.signal instanceof AbortSignal)
+    ) {
+      delete cleanInit.signal;
+    }
+    return fn(input, cleanInit);
+  }
+  return fn(input);
 };
 
 export function isSupabaseConfigured(): boolean {

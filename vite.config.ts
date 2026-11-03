@@ -7,12 +7,17 @@ export default defineConfig(({ command }) => {
   return {
     base: command === 'build' ? './' : '/',
     plugins: [react(), tailwindcss()],
+    define: {
+      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify('https://zyyaeuiprnrezuuqdmyt.supabase.co'),
+      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify('sb_publishable_FQzPhZZQolCGuGpGSO_HcA__P41b0DG'),
+    },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve('.'),
       },
     },
     build: {
+      chunkSizeWarningLimit: 1500,
       rollupOptions: {
         output: {
           entryFileNames: 'assets/app.js',
@@ -30,3 +35,4 @@ export default defineConfig(({ command }) => {
     },
   };
 });
+

@@ -6,6 +6,7 @@ import './index.css';
 const rootElement = document.getElementById('root');
 
 if (rootElement) {
+  (window as any).__SPARK_MOUNTED__ = true;
   createRoot(rootElement).render(
     <ErrorBoundary>
       <App />
@@ -14,3 +15,4 @@ if (rootElement) {
 } else {
   console.error('Fatal: Spark root element #root not found in document.');
 }
+
