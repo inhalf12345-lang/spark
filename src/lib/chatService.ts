@@ -28,6 +28,8 @@ import {
   findLocalAccountByEmail,
   isDummyUserOrConversation,
   generateConsistentUserId,
+
+    compressImageFile,
 } from './storage';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1468,13 +1470,27 @@ export async function uploadGroupChatImage(
   conversationId: string,
   file: File
 ): Promise<string> {
-  if (!isSupabaseConfigured()) {
-    return new Promise((resolve, reject) => {
+  const readOriginalFile = () =>
+    new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
+
+  let uploadBody: File | Blob = file;
+  let fallbackDataUrl: string;
+
+  try {
+    fallbackDataUrl = await compressImageFile(file);
+    const response = await fetch(fallbackDataUrl);
+    uploadBody = await response.blob();
+  } catch {
+    fallbackDataUrl = await readOriginalFile();
+  }
+
+  if (!isSupabaseConfigured()) {
+    return fallbackDataUrl;
   }
 
   const supabase = getSupabase();
@@ -1482,7 +1498,11 @@ export async function uploadGroupChatImage(
     throw new Error('Supabase client not initialized');
   }
 
-  const fileExt = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+  const mimeType = uploadBody.type || file.type || 'image/jpeg';
+  const fileExt = mimeType === 'image/jpeg'
+    ? 'jpg'
+    : mimeType.split('/')[1] || 'jpg';
+
   const cleanConvId = conversationId.replace(/[^a-zA-Z0-9_-]/g, '');
   const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
   const filePath = `${cleanConvId}/${fileName}`;
@@ -1490,30 +1510,21 @@ export async function uploadGroupChatImage(
   try {
     const { data, error } = await supabase.storage
       .from('chat-media')
-      .upload(filePath, file, {
+      .upload(filePath, uploadBody, {
         cacheControl: '3600',
         upsert: false,
+        contentType: mimeType,
       });
 
     if (error) {
-      console.warn('Storage upload note, falling back to data URL:', error.message);
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
-      });
+      console.warn('Storage upload note:', error.message);
+      return fallbackDataUrl;
     }
 
     return data?.path || filePath;
-  } catch (e) {
-    console.warn('Upload error, using fallback:', e);
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => resolve('');
-      reader.readAsDataURL(file);
-    });
+  } catch (error) {
+    console.warn('Upload error:', error);
+    return fallbackDataUrl;
   }
 }
 
