@@ -155,15 +155,15 @@ export function getPersistentSignedInProfile(): UserProfile | null {
         findLocalAccountById(active.id) ||
         (active.email ? findLocalAccountByEmail(active.email) : undefined);
       if (account?.profile && account.profile.id && account.profile.username) {
-        return account.profile;
+        if (!account.profile.username.startsWith('arch_')) {
+          return account.profile;
+        }
       }
       if (storedProfile && storedProfile.id === active.id && storedProfile.username) {
-        return storedProfile;
+        if (!storedProfile.username.startsWith('arch_')) {
+          return storedProfile;
+        }
       }
-    }
-
-    if (storedProfile && storedProfile.id && storedProfile.username) {
-      return storedProfile;
     }
   } catch {}
   return null;
@@ -198,7 +198,8 @@ export function isDummyUserOrConversation(id?: string, username?: string): boole
   if (id && (LEGACY_DUMMY_IDS.has(id) || id.startsWith('test_user_'))) {
     return true;
   }
-  if (username && LEGACY_DUMMY_USERNAMES.has(username.trim().replace(/^@+/, '').toLowerCase())) {
+  const cleanUname = username ? username.trim().replace(/^@+/, '').toLowerCase() : '';
+  if (cleanUname && (LEGACY_DUMMY_USERNAMES.has(cleanUname) || cleanUname.startsWith('arch_'))) {
     return true;
   }
   return false;
@@ -840,7 +841,7 @@ export function getTimeUntilNextMonday(): string {
   return `${hours}h ${minutes}m`;
 }
 
-// Local session cleanup on explicit user signout — preserves stored chats, groups, todos, quests, and accounts
+// Local session cleanup on explicit user signout or reset
 export function clearUserSessionData() {
   localStorage.setItem(STAY_SIGNED_IN_KEY, 'false');
   localStorage.removeItem(PROFILE_KEY);
@@ -848,7 +849,25 @@ export function clearUserSessionData() {
   localStorage.removeItem(LAST_SENT_TIME_KEY);
   localStorage.removeItem('spark_active_local_user');
   localStorage.removeItem('spark_demo_mode_active');
+  localStorage.removeItem(LOCAL_CONVERSATIONS_KEY);
+  localStorage.removeItem(LOCAL_ACCOUNTS_KEY);
+  localStorage.removeItem(STORIES_KEY);
+  localStorage.removeItem(QUESTS_KEY);
   try {
+    // Clear per-user conversation keys and cached messages
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k.startsWith('spark_local_conversations_v1_') ||
+          k.startsWith('spark_chat_cache_') ||
+          k.startsWith('spark_crypto_'))
+      ) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
     sessionStorage.clear();
   } catch {}
 }
