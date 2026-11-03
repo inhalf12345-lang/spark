@@ -81,29 +81,38 @@ export const GroupTodoSection: React.FC<GroupTodoSectionProps> = ({
     if (isSupabaseConfigured()) {
       const supabase = getSupabase();
       if (supabase) {
-        const channel = supabase
-          .channel(`group_todos_${conversationId}`)
-          .on('broadcast', { event: 'todo_updated' }, (payload) => {
-            const incoming = payload.payload as MemberDailyTodoList;
-            if (incoming && incoming.user_id) {
-              setTodoLists((prev) => {
-                const idx = prev.findIndex((i) => i.user_id === incoming.user_id);
-                let next: MemberDailyTodoList[];
-                if (idx >= 0) {
-                  next = [...prev];
-                  next[idx] = incoming;
-                } else {
-                  next = [incoming, ...prev];
-                }
-                saveGroupDailyTodos(conversationId, next);
-                return next;
-              });
-            }
-          })
-          .subscribe();
+        let channel: any = null;
+        try {
+          channel = supabase
+            .channel(`group_todos_${conversationId}`)
+            .on('broadcast', { event: 'todo_updated' }, (payload) => {
+              const incoming = payload.payload as MemberDailyTodoList;
+              if (incoming && incoming.user_id) {
+                setTodoLists((prev) => {
+                  const idx = prev.findIndex((i) => i.user_id === incoming.user_id);
+                  let next: MemberDailyTodoList[];
+                  if (idx >= 0) {
+                    next = [...prev];
+                    next[idx] = incoming;
+                  } else {
+                    next = [incoming, ...prev];
+                  }
+                  saveGroupDailyTodos(conversationId, next);
+                  return next;
+                });
+              }
+            })
+            .subscribe();
+        } catch (err) {
+          console.warn('Group todo realtime channel notice:', err);
+        }
 
         return () => {
-          supabase.removeChannel(channel);
+          if (channel) {
+            try {
+              supabase.removeChannel(channel);
+            } catch {}
+          }
         };
       }
     }

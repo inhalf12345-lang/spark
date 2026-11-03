@@ -1,6 +1,0 @@
-{
-  "summary": "Implementation plan to eliminate the 'Illegal constructor' crash on mobile Chrome and GitHub Pages, add silent runtime auto-recovery, and harden all four core feature areas (Supabase cross-device auth, 1-on-1 & Group Chat with creator delete, Stories/Quests/Shop/Leaderboard, and Data Precision/E2EE).",
-  "updatedAt": "2026-11-02T18:34:21.393245814Z",
-  "requestFeedback": true,
-  "userFacing": true
-}

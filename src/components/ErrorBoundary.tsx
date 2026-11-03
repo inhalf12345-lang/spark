@@ -38,7 +38,12 @@ export class ErrorBoundary extends Component<Props, State> {
     if (this.state.autoRecoverCount < 1) {
       try {
         // Sanitize any corrupted transient cache entries while keeping user auth & profile intact
-        const transientKeys = ['spark_cached_messages', 'spark_real_conversations'];
+        const transientKeys = [
+          'spark_local_conversations_v1',
+          'spark_local_quests',
+          'spark_local_stories',
+          'spark_data_precision_settings_v1',
+        ];
         transientKeys.forEach((k) => {
           const val = localStorage.getItem(k);
           if (val) {
@@ -77,13 +82,13 @@ export class ErrorBoundary extends Component<Props, State> {
   handleResetAndReload = () => {
     try {
       const keysToClear = [
-        'spark_active_local_session',
-        'spark_user_profile',
-        'spark_stay_signed_in',
-        'spark_real_conversations',
-        'spark_cached_messages',
-        'spark_daily_quests',
-        'spark_user_stories',
+        'spark_active_local_user',
+        'spark_local_profile',
+        'spark_stay_signed_in_v1',
+        'spark_local_conversations_v1',
+        'spark_local_quests',
+        'spark_local_stories',
+        'spark_data_precision_settings_v1',
       ];
       keysToClear.forEach((k) => localStorage.removeItem(k));
     } catch {}

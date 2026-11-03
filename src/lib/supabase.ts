@@ -95,13 +95,14 @@ export function getSupabaseConfigState(): {
     } catch {}
   }
 
+  const metaEnv = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
   const envUrl =
-    typeof import.meta.env.VITE_SUPABASE_URL === 'string'
-      ? import.meta.env.VITE_SUPABASE_URL.trim()
+    typeof metaEnv.VITE_SUPABASE_URL === 'string'
+      ? metaEnv.VITE_SUPABASE_URL.trim()
       : '';
   const envAnon =
-    typeof import.meta.env.VITE_SUPABASE_ANON_KEY === 'string'
-      ? import.meta.env.VITE_SUPABASE_ANON_KEY.trim()
+    typeof metaEnv.VITE_SUPABASE_ANON_KEY === 'string'
+      ? metaEnv.VITE_SUPABASE_ANON_KEY.trim()
       : '';
 
   let localUrl = '';

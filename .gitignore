@@ -1,8 +1,21 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 build/
 dist/
 coverage/
+
+# AI Studio & Temporary Attachments
+.aistudio/
+public/assets/aistudio/
+docs/assets/aistudio/
+
+# OS / Editor files
 .DS_Store
 *.log
+bun.lock
+
+# Environment variables
 .env*
 !.env.example

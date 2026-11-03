@@ -540,19 +540,29 @@ export function getLocalProfile(): UserProfile {
   try {
     const raw = localStorage.getItem(PROFILE_KEY);
     if (raw) {
-      const p = JSON.parse(raw);
-      const today = new Date().toISOString().split('T')[0];
-      if (p.daily_coins_date !== today) {
-        p.daily_coins_date = today;
-        p.daily_coins_earned = 0;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const p: UserProfile = {
+          ...DEFAULT_STARTER_PROFILE,
+          ...parsed,
+        };
+        const today = new Date().toISOString().split('T')[0];
+        if (p.daily_coins_date !== today) {
+          p.daily_coins_date = today;
+          p.daily_coins_earned = 0;
+        }
+        if (!p.avatar_url) p.avatar_url = DEFAULT_STARTER_PROFILE.avatar_url;
+        if (!p.equipped_frame) p.equipped_frame = 'frame_pulsar';
+        if (!p.equipped_theme) p.equipped_theme = 'theme_cosmic';
+        if (!p.equipped_outfit) p.equipped_outfit = 'outfit_voyager';
+        if (!Array.isArray(p.unlocked_items)) {
+          p.unlocked_items = ['frame_pulsar', 'theme_cosmic', 'outfit_voyager'];
+        }
+        if (typeof p.coins !== 'number' || isNaN(p.coins)) p.coins = 50;
+        if (typeof p.streak_days !== 'number' || isNaN(p.streak_days)) p.streak_days = 1;
+        if (typeof p.weekly_coins !== 'number' || isNaN(p.weekly_coins)) p.weekly_coins = 68;
+        return p;
       }
-      // Ensure phase 2 and 3 fields exist
-      if (!p.equipped_frame) p.equipped_frame = 'frame_pulsar';
-      if (!p.equipped_theme) p.equipped_theme = 'theme_cosmic';
-      if (!p.equipped_outfit) p.equipped_outfit = 'outfit_voyager';
-      if (!p.unlocked_items) p.unlocked_items = ['frame_pulsar', 'theme_cosmic', 'outfit_voyager'];
-      if (typeof p.weekly_coins !== 'number') p.weekly_coins = 68;
-      return p;
     }
   } catch {}
   return DEFAULT_STARTER_PROFILE;
@@ -582,7 +592,10 @@ export function saveLocalProfile(profile: UserProfile) {
 export function getLocalFriends(): FriendOrb[] {
   try {
     const raw = localStorage.getItem(FRIENDS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
   } catch {}
   return DEFAULT_FRIEND_ORBS;
 }
@@ -596,7 +609,10 @@ export function saveLocalFriends(friends: FriendOrb[]) {
 export function getLocalQuests(): DailyQuest[] {
   try {
     const raw = localStorage.getItem(QUESTS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
   } catch {}
   return DEFAULT_DAILY_QUESTS;
 }
@@ -610,7 +626,10 @@ export function saveLocalQuests(quests: DailyQuest[]) {
 export function getLocalRequests(): FriendRequest[] {
   try {
     const raw = localStorage.getItem(REQUESTS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
   } catch {}
   return DEFAULT_FRIEND_REQUESTS;
 }
@@ -626,10 +645,12 @@ export function getLocalStories(): UserStory[] {
     const raw = localStorage.getItem(STORIES_KEY);
     if (raw) {
       const list: UserStory[] = JSON.parse(raw);
-      const now = new Date().getTime();
-      // Filter out stories older than 24 hours (auto-delete rule)
-      const active = list.filter((s) => new Date(s.expires_at).getTime() > now);
-      return active.length > 0 ? active : DEFAULT_STORIES;
+      if (Array.isArray(list)) {
+        const now = new Date().getTime();
+        // Filter out stories older than 24 hours (auto-delete rule)
+        const active = list.filter((s) => s && s.expires_at && new Date(s.expires_at).getTime() > now);
+        return active.length > 0 ? active : DEFAULT_STORIES;
+      }
     }
   } catch {}
   return DEFAULT_STORIES;

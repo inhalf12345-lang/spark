@@ -324,95 +324,104 @@ export const ChatView: React.FC<ChatViewProps> = ({
             ? `chat_${activeConvId}`
             : `chat_pair_${[profile.id, friend.id].sort().join('_')}`;
 
-        const channel = supabase
-          .channel(channelName)
-          .on(
-            'postgres_changes',
-            {
-              event: 'INSERT',
-              schema: 'public',
-              table: 'messages',
-            },
-            async (payload) => {
-              const newMsg = payload.new as any;
-              if (!newMsg) return;
+        let channel: any = null;
+        try {
+          channel = supabase
+            .channel(channelName)
+            .on(
+              'postgres_changes',
+              {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'messages',
+              },
+              async (payload) => {
+                const newMsg = payload.new as any;
+                if (!newMsg) return;
 
-              const isRelevant = friend.is_group
-                ? newMsg.conversation_id === activeConvId
-                : (newMsg.conversation_id && newMsg.conversation_id === activeConvId) ||
-                  (newMsg.sender_id === friend.id && newMsg.receiver_id === profile.id) ||
-                  (newMsg.sender_id === profile.id && newMsg.receiver_id === friend.id);
+                const isRelevant = friend.is_group
+                  ? newMsg.conversation_id === activeConvId
+                  : (newMsg.conversation_id && newMsg.conversation_id === activeConvId) ||
+                    (newMsg.sender_id === friend.id && newMsg.receiver_id === profile.id) ||
+                    (newMsg.sender_id === profile.id && newMsg.receiver_id === friend.id);
 
-              if (isRelevant) {
-                let displayContent = newMsg.content || '';
-                let isE2EE = false;
-                let decryptionError = false;
+                if (isRelevant) {
+                  let displayContent = newMsg.content || '';
+                  let isE2EE = false;
+                  let decryptionError = false;
 
-                // Decrypt incoming message if encrypted
-                if (newMsg.ciphertext && newMsg.iv) {
-                  if (conversationKey) {
-                    const decrypted = await decryptE2EEMessage(
-                      newMsg.ciphertext,
-                      newMsg.iv,
-                      conversationKey
-                    );
-                    if (decrypted !== null) {
-                      displayContent = decrypted;
-                      isE2EE = true;
+                  // Decrypt incoming message if encrypted
+                  if (newMsg.ciphertext && newMsg.iv) {
+                    if (conversationKey) {
+                      const decrypted = await decryptE2EEMessage(
+                        newMsg.ciphertext,
+                        newMsg.iv,
+                        conversationKey
+                      );
+                      if (decrypted !== null) {
+                        displayContent = decrypted;
+                        isE2EE = true;
+                      } else {
+                        displayContent = '🔒 Unable to decrypt this message';
+                        decryptionError = true;
+                      }
                     } else {
-                      displayContent = '🔒 Unable to decrypt this message';
+                      displayContent = '🔒 Encrypted message (key unavailable)';
                       decryptionError = true;
                     }
-                  } else {
-                    displayContent = '🔒 Encrypted message (key unavailable)';
-                    decryptionError = true;
                   }
+
+                  // If sender details not included in realtime payload, resolve from friend members
+                  let senderName = '';
+                  let senderAvatar = '';
+                  if (friend.is_group && friend.members) {
+                    const found = friend.members.find((m) => m.id === newMsg.sender_id);
+                    if (found) {
+                      senderName = found.display_name || found.username;
+                      senderAvatar = found.avatar_url;
+                    }
+                  }
+
+                  const processedMsg: ChatMessage = {
+                    id: newMsg.id,
+                    conversation_id: newMsg.conversation_id,
+                    sender_id: newMsg.sender_id,
+                    sender_display_name: senderName,
+                    sender_avatar_url: senderAvatar,
+                    receiver_id: newMsg.receiver_id,
+                    content: displayContent,
+                    media_url: newMsg.media_url,
+                    ciphertext: newMsg.ciphertext,
+                    iv: newMsg.iv,
+                    encryption_version: newMsg.encryption_version,
+                    is_e2ee: isE2EE,
+                    decryption_error: decryptionError,
+                    coins_earned: newMsg.coins_earned || 2,
+                    created_at: newMsg.created_at,
+                    status: 'delivered',
+                  };
+
+                  setMessages((prev) => {
+                    if (prev.some((m) => m.id === processedMsg.id)) {
+                      return prev;
+                    }
+                    return [...prev, processedMsg];
+                  });
                 }
-
-                // If sender details not included in realtime payload, resolve from friend members
-                let senderName = '';
-                let senderAvatar = '';
-                if (friend.is_group && friend.members) {
-                  const found = friend.members.find((m) => m.id === newMsg.sender_id);
-                  if (found) {
-                    senderName = found.display_name || found.username;
-                    senderAvatar = found.avatar_url;
-                  }
-                }
-
-                const processedMsg: ChatMessage = {
-                  id: newMsg.id,
-                  conversation_id: newMsg.conversation_id,
-                  sender_id: newMsg.sender_id,
-                  sender_display_name: senderName,
-                  sender_avatar_url: senderAvatar,
-                  receiver_id: newMsg.receiver_id,
-                  content: displayContent,
-                  media_url: newMsg.media_url,
-                  ciphertext: newMsg.ciphertext,
-                  iv: newMsg.iv,
-                  encryption_version: newMsg.encryption_version,
-                  is_e2ee: isE2EE,
-                  decryption_error: decryptionError,
-                  coins_earned: newMsg.coins_earned || 2,
-                  created_at: newMsg.created_at,
-                  status: 'delivered',
-                };
-
-                setMessages((prev) => {
-                  if (prev.some((m) => m.id === processedMsg.id)) {
-                    return prev;
-                  }
-                  return [...prev, processedMsg];
-                });
               }
-            }
-          )
-          .subscribe();
+            )
+            .subscribe();
+        } catch (err) {
+          console.warn('Chat realtime channel notice:', err);
+        }
 
         return () => {
           isSubscribed = false;
-          supabase.removeChannel(channel);
+          if (channel) {
+            try {
+              supabase.removeChannel(channel);
+            } catch {}
+          }
         };
       }
     }
@@ -786,7 +795,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div className="relative">
                 <div className="w-10 h-10 rounded-full p-[1.5px] bg-gradient-to-tr from-[#ff3b69] to-[#fb7185] shadow-xs">
                   <img
-                    src={friend.avatar_url}
+                    src={
+                      friend.avatar_url ||
+                      `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+                        friend.username || 'spark'
+                      )}&backgroundColor=f1f5f9`
+                    }
                     alt={friend.display_name || friend.username}
                     className="w-full h-full rounded-full object-cover bg-white"
                     referrerPolicy="no-referrer"
@@ -960,7 +974,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 >
                   {!isMine && (
                     <img
-                      src={senderAvatar}
+                      src={
+                        senderAvatar ||
+                        `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+                          senderDisplayName || 'member'
+                        )}&backgroundColor=f1f5f9`
+                      }
                       alt={senderDisplayName}
                       className="w-7 h-7 rounded-full object-cover bg-white mb-1 shadow-xs border border-slate-200"
                     />
@@ -1245,7 +1264,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
               {/* Group Identity Card */}
               <div className="flex items-center gap-3.5 p-3.5 rounded-2xl bg-slate-50 border border-slate-100">
                 <img
-                  src={friend.avatar_url}
+                  src={
+                    friend.avatar_url ||
+                    `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+                      friend.username || 'group'
+                    )}&backgroundColor=f1f5f9`
+                  }
                   alt={friend.display_name || friend.username}
                   className="w-13 h-13 rounded-full object-cover bg-white border border-slate-200 shrink-0"
                 />
@@ -1292,7 +1316,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         >
                           <div className="flex items-center gap-2 truncate">
                             <img
-                              src={m.avatar_url}
+                              src={
+                                m.avatar_url ||
+                                `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+                                  m.username || 'member'
+                                )}&backgroundColor=f1f5f9`
+                              }
                               alt={m.username}
                               className="w-7 h-7 rounded-full object-cover bg-white shrink-0"
                             />

@@ -203,51 +203,57 @@ export default function App() {
     });
 
     // 2. Realtime Auth State Change Listener
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        setAuthView('reset_password');
-        setIsAuthenticated(false);
-        setIsSessionInitializing(false);
-      } else if (event === 'SIGNED_IN' && session?.user) {
-        setSessionUser(session.user);
-        const { data: profileData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .maybeSingle();
-
-        if (profileData && profileData.username) {
-          syncProfileFromDatabase(session.user, profileData);
-          setIsAuthenticated(true);
-          loadConversations(session.user.id);
-          syncDailyQuestsToSupabase(session.user.id, getLocalQuests()).catch(() => {});
-
-          getOrCreateDeviceIdentityKeyPair(session.user.id)
-            .then(({ publicJwk }) => syncPublicKeyToSupabase(session.user.id, publicJwk))
-            .catch((e) => console.warn('E2EE keypair init notice:', e));
-        } else if (!restoreSavedLocalSession()) {
-          setAuthView('profile_setup');
+    let subscription: { unsubscribe: () => void } | null = null;
+    try {
+      const authListener = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          setAuthView('reset_password');
           setIsAuthenticated(false);
-        }
-        setIsSessionInitializing(false);
-      } else if (event === 'SIGNED_OUT') {
-        // Only sign out if the user explicitly signed out (no active persistent local session)
-        if (!getPersistentSignedInProfile()) {
-          purgeCryptoSessionMemory();
-          setSessionUser(null);
-          setIsAuthenticated(false);
-          setConversations([]);
-          setAuthView('login');
           setIsSessionInitializing(false);
+        } else if (event === 'SIGNED_IN' && session?.user) {
+          setSessionUser(session.user);
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .maybeSingle();
+
+          if (profileData && profileData.username) {
+            syncProfileFromDatabase(session.user, profileData);
+            setIsAuthenticated(true);
+            loadConversations(session.user.id);
+            syncDailyQuestsToSupabase(session.user.id, getLocalQuests()).catch(() => {});
+
+            getOrCreateDeviceIdentityKeyPair(session.user.id)
+              .then(({ publicJwk }) => syncPublicKeyToSupabase(session.user.id, publicJwk))
+              .catch((e) => console.warn('E2EE keypair init notice:', e));
+          } else if (!restoreSavedLocalSession()) {
+            setAuthView('profile_setup');
+            setIsAuthenticated(false);
+          }
+          setIsSessionInitializing(false);
+        } else if (event === 'SIGNED_OUT') {
+          // Only sign out if the user explicitly signed out (no active persistent local session)
+          if (!getPersistentSignedInProfile()) {
+            purgeCryptoSessionMemory();
+            setSessionUser(null);
+            setIsAuthenticated(false);
+            setConversations([]);
+            setAuthView('login');
+            setIsSessionInitializing(false);
+          }
         }
-      }
-    });
+      });
+      subscription = authListener?.data?.subscription || null;
+    } catch (err) {
+      console.warn('Auth state listener notice:', err);
+    }
 
     return () => {
       clearTimeout(safetyTimer);
-      subscription.unsubscribe();
+      try {
+        subscription?.unsubscribe();
+      } catch {}
     };
   }, [loadConversations]);
 
@@ -270,26 +276,35 @@ export default function App() {
     const supabase = getSupabase();
     if (!supabase) return;
 
-    const channel = supabase
-      .channel(`user_conv_refresh_${profile.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-        },
-        (payload) => {
-          const newMsg = payload.new as any;
-          if (newMsg && (newMsg.receiver_id === profile.id || newMsg.sender_id === profile.id)) {
-            loadConversations(profile.id);
+    let channel: any = null;
+    try {
+      channel = supabase
+        .channel(`user_conv_refresh_${profile.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'messages',
+          },
+          (payload) => {
+            const newMsg = payload.new as any;
+            if (newMsg && (newMsg.receiver_id === profile.id || newMsg.sender_id === profile.id)) {
+              loadConversations(profile.id);
+            }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
+    } catch (err) {
+      console.warn('Realtime channel subscription notice:', err);
+    }
 
     return () => {
-      supabase.removeChannel(channel);
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch {}
+      }
     };
   }, [isAuthenticated, profile.id, loadConversations]);
 

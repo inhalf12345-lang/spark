@@ -15,6 +15,54 @@
   </head>
   <body class="bg-white text-slate-800">
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (function () {
+        var loaded = false;
+        window.__sparkLoadStaticBundle = function () {
+          if (loaded) return;
+          loaded = true;
+          var css = document.createElement('link');
+          css.rel = 'stylesheet';
+          css.href = './public/gh-pages-bundle/app.css';
+          css.onerror = function () {
+            var altCss = document.createElement('link');
+            altCss.rel = 'stylesheet';
+            altCss.href = './assets/app.css';
+            document.head.appendChild(altCss);
+          };
+          document.head.appendChild(css);
+
+          var js = document.createElement('script');
+          js.type = 'module';
+          js.crossOrigin = 'anonymous';
+          js.src = './public/gh-pages-bundle/app.js';
+          js.onerror = function () {
+            var altJs = document.createElement('script');
+            altJs.type = 'module';
+            altJs.crossOrigin = 'anonymous';
+            altJs.src = './assets/app.js';
+            document.body.appendChild(altJs);
+          };
+          document.body.appendChild(js);
+        };
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx" onerror="window.__sparkLoadStaticBundle && window.__sparkLoadStaticBundle()"></script>
+    <script>
+      (function () {
+        var isViteDev = Boolean(document.querySelector('script[src*="@vite/client"]'));
+        var hasRawTsx = Boolean(document.querySelector('script[src*="/src/main.tsx"]'));
+        if (!isViteDev && hasRawTsx && window.location.hostname.indexOf('github.io') !== -1) {
+          window.__sparkLoadStaticBundle();
+        } else if (!isViteDev) {
+          setTimeout(function () {
+            var root = document.getElementById('root');
+            if (root && !root.hasChildNodes() && window.__sparkLoadStaticBundle) {
+              window.__sparkLoadStaticBundle();
+            }
+          }, 1500);
+        }
+      })();
+    </script>
   </body>
 </html>
