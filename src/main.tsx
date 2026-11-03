@@ -2,6 +2,9 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
+import { unlockSound } from './lib/sounds';
+
+window.addEventListener('pointerdown', unlockSound, { once: true });
 
 const bootLoader = document.getElementById('spark-boot-loader');
 if (bootLoader && bootLoader.parentNode) {

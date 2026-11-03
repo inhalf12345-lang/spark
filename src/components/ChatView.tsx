@@ -52,6 +52,7 @@ import {
 } from '../lib/cryptoService';
 import { GroupPhotoButtonAndModal } from './GroupPhotoModal';
 import { GroupTodoSection } from './GroupTodoBoard';
+import { playSendSound, playReceiveSound } from '../lib/sounds';
 
 interface ChatTargetUser {
   id: string;
@@ -353,6 +354,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     (newMsg.sender_id === profile.id && newMsg.receiver_id === friend.id);
 
                 if (isRelevant) {
+                  if (newMsg.sender_id !== profile.id) playReceiveSound();
                   let displayContent = newMsg.content || '';
                   let isE2EE = false;
                   let decryptionError = false;
@@ -541,6 +543,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             friend.is_group ? null : conversationKey,
             uploadedMediaPath
           );
+          playSendSound();
 
           appendCachedMessage(activeConvId, savedMessage);
           setMessages((prev) => {
