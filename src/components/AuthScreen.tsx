@@ -175,17 +175,86 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   };
 
   // Helper to resolve an authenticated or local user into their existing profile or username setup
-  const completeLocalSignInOrSetup = (
-    targetEmail: string,
+  const completeLocalSignInOrSetup = async (
+    targetEmailOrUsername: string,
     targetPassword?: string,
     knownUserId?: string
   ) => {
-    const cleanEmail = targetEmail.trim().toLowerCase();
+    const cleanInput = targetEmailOrUsername.trim().toLowerCase();
+    const isUsernameInput = !cleanInput.includes('@') || cleanInput.startsWith('@');
+    const cleanUsernameLookup = cleanInput.replace(/^@+/, '').split('@')[0];
+    const cleanEmail = isUsernameInput ? `${cleanUsernameLookup}@spark.local` : cleanInput;
+
     const existingAcc =
       findLocalAccountByEmail(cleanEmail) ||
       (knownUserId ? findLocalAccountById(knownUserId) : undefined);
 
     const resolvedId = knownUserId || existingAcc?.id || generateConsistentUserId(cleanEmail);
+
+    // 1. Check if this user already has a saved profile in Supabase `profiles` (by ID or username)
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      if (supabase) {
+        try {
+          let cloudProf: any = null;
+          const { data: byId } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', resolvedId)
+            .maybeSingle();
+
+          if (byId && byId.username) {
+            cloudProf = byId;
+          } else if (cleanUsernameLookup) {
+            const { data: byUsername } = await supabase
+              .from('profiles')
+              .select('*')
+              .ilike('username', cleanUsernameLookup)
+              .maybeSingle();
+            if (byUsername && byUsername.username) {
+              cloudProf = byUsername;
+            }
+          }
+
+          if (cloudProf && cloudProf.username) {
+            const restoredProfile: UserProfile = {
+              id: cloudProf.id,
+              email: cleanEmail,
+              username: cloudProf.username,
+              display_name: cloudProf.display_name || cloudProf.username,
+              avatar_url:
+                cloudProf.avatar_url ||
+                `https://api.dicebear.com/7.x/bottts/svg?seed=${cloudProf.username}&backgroundColor=f1f5f9`,
+              avatar_style: cloudProf.avatar_style || 'cosmic_neon',
+              bio: cloudProf.bio || '',
+              coins: cloudProf.coins ?? 50,
+              streak_days: cloudProf.streak_days ?? 1,
+              daily_coins_earned: cloudProf.daily_coins_earned ?? 0,
+              daily_coins_date:
+                cloudProf.daily_coins_date ?? new Date().toISOString().split('T')[0],
+              weekly_coins: cloudProf.weekly_coins ?? 0,
+              equipped_frame: cloudProf.equipped_frame || 'frame_pulsar',
+              equipped_theme: cloudProf.equipped_theme || 'theme_cosmic',
+              equipped_outfit: cloudProf.equipped_outfit || 'outfit_voyager',
+              unlocked_items: cloudProf.unlocked_items || [
+                'frame_pulsar',
+                'theme_cosmic',
+                'outfit_voyager',
+              ],
+              created_at: cloudProf.created_at || new Date().toISOString(),
+            };
+            upsertLocalAccount(cleanEmail, targetPassword, restoredProfile.id, restoredProfile);
+            saveActiveLocalSession(restoredProfile.id, cleanEmail);
+            saveLocalProfile(restoredProfile);
+            onAuthSuccess(restoredProfile);
+            return;
+          }
+        } catch (err) {
+          console.warn('Cloud profile lookup notice:', err);
+        }
+      }
+    }
+
     const updatedAcc = upsertLocalAccount(
       cleanEmail,
       targetPassword || existingAcc?.password,
@@ -194,7 +263,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     );
     saveActiveLocalSession(resolvedId, cleanEmail);
 
-    // Check if this user already has a saved profile with a username
+    // 2. Check if this user already has a saved local profile with a username
     if (updatedAcc.profile && updatedAcc.profile.username) {
       const fullProf: UserProfile = {
         ...DEFAULT_STARTER_PROFILE,
@@ -203,13 +272,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         email: cleanEmail,
       };
       saveLocalProfile(fullProf);
-      // Immediately sync to Supabase directory so other users can discover them
       syncProfileToSupabaseDirectory(fullProf).catch(() => {});
       onAuthSuccess(fullProf);
       return;
     }
 
-    // Check if the current browser profile explicitly matches this user ID or email
+    // 3. Check if the current browser profile explicitly matches this user ID or email
     const localProf = getLocalProfile();
     if (
       localProf &&
@@ -309,19 +377,25 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       console.warn('Post-auth fetch note:', e);
     }
 
-    // Fallback: check local account profile or proceed to username setup
-    completeLocalSignInOrSetup(userEmail, password, userId);
+    // Fallback: check local/cloud account profile or proceed to username setup
+    await completeLocalSignInOrSetup(userEmail, password, userId);
   };
 
-  // Login handler (works with Supabase Auth + seamless local persistence fallback)
+  // Login handler (works with Supabase Auth + seamless cloud/local persistence fallback)
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !validateEmail(cleanEmail)) {
-      setErrorMessage('Please enter a valid email address.');
+    const rawInput = email.trim().toLowerCase();
+    const isUsernameLogin =
+      rawInput.length >= 2 && (!rawInput.includes('@') || rawInput.startsWith('@'));
+    const cleanEmail = isUsernameLogin
+      ? `${rawInput.replace(/^@+/, '')}@spark.local`
+      : rawInput;
+
+    if (!rawInput || (!isUsernameLogin && !validateEmail(cleanEmail))) {
+      setErrorMessage('Please enter a valid email address or @username.');
       return;
     }
 
@@ -335,7 +409,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     try {
       const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
-      if (supabase) {
+      if (supabase && !isUsernameLogin) {
         const { data, error } = await supabase.auth.signInWithPassword({
           email: cleanEmail,
           password,
@@ -360,7 +434,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   password,
                 });
                 if (signUpData?.user) {
-                  completeLocalSignInOrSetup(cleanEmail, password, signUpData.user.id);
+                  await completeLocalSignInOrSetup(cleanEmail, password, signUpData.user.id);
                   setIsLoading(false);
                   return;
                 }
@@ -370,10 +444,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         }
       }
 
-      // Local / fallback sign-in so the user is never blocked from logging in
-      completeLocalSignInOrSetup(cleanEmail, password);
+      // Cloud / Local fallback sign-in so existing users on any device are restored
+      await completeLocalSignInOrSetup(rawInput, password);
     } catch {
-      completeLocalSignInOrSetup(cleanEmail, password);
+      await completeLocalSignInOrSetup(rawInput, password);
     } finally {
       setIsLoading(false);
     }
@@ -989,16 +1063,16 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               <form onSubmit={handleLogin} className="space-y-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    Email Address
+                    Email or @Username
                   </label>
                   <div className="relative">
                     <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
-                      type="email"
+                      type="text"
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="you@example.com"
+                      placeholder="you@example.com or @username"
                       className="w-full py-2.5 pl-10 pr-3 rounded-full text-xs sm:text-sm bg-slate-50 border border-slate-200/80 text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#ff3b69] focus:bg-white transition-all shadow-inner"
                     />
                   </div>

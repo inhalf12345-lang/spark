@@ -2,6 +2,7 @@ import { getSupabase, isSupabaseConfigured } from './supabase';
 import {
   ChatMessage,
   DailyQuest,
+  LeaderboardEntry,
   PublicUserProfile,
   RealConversation,
   UserProfile,
@@ -965,6 +966,9 @@ export async function fetchUserRealConversations(
             }
 
             if (isGroup) {
+              if ((!convMeta?.name || !convMeta.name.trim()) && members.length <= 1) {
+                continue;
+              }
               const groupMembersList = members
                 .map((m: any) => m.profiles)
                 .filter(Boolean)
@@ -976,7 +980,7 @@ export async function fetchUserRealConversations(
                   streak_days: p.streak_days || 1,
                 }));
 
-              const groupName = convMeta?.name || 'Group Chat';
+              const groupName = convMeta?.name?.trim() || 'Group Chat';
               const groupAvatar =
                 convMeta?.avatar_url ||
                 `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(
@@ -990,7 +994,7 @@ export async function fetchUserRealConversations(
                 avatar_url: groupAvatar,
                 member_count: members.length,
                 members: groupMembersList,
-                created_by: convMeta?.created_by,
+                created_by: convMeta?.created_by || members[0]?.user_id || currentUserId,
                 created_at: convMeta?.created_at || new Date().toISOString(),
                 updated_at:
                   lastMsgData?.created_at || convMeta?.updated_at || new Date().toISOString(),
@@ -1017,7 +1021,7 @@ export async function fetchUserRealConversations(
             } else {
               const otherMemberItem = members.find((m: any) => m.user_id !== currentUserId);
               const otherProfile = otherMemberItem?.profiles;
-              if (!otherProfile) continue;
+              if (!otherProfile || otherProfile.id === currentUserId) continue;
 
               addOrMergeConversation({
                 id: convId,
@@ -1705,12 +1709,20 @@ export async function sendRealMessageToSupabase(
       await syncProfileToSupabaseDirectory({ ...senderProfile, id: actualSenderId });
     }
 
-    // Ensure conversation & membership rows exist in Supabase
-    await supabase.from('conversations').insert({
-      id: validConvUuid,
-      is_group: !validReceiverUuid,
-      updated_at: now,
-    });
+    // Ensure conversation & membership rows exist in Supabase for 1-on-1 chats (groups are pre-created)
+    const { data: existingConv } = await supabase
+      .from('conversations')
+      .select('id, is_group')
+      .eq('id', validConvUuid)
+      .maybeSingle();
+
+    if (!existingConv && validReceiverUuid) {
+      await supabase.from('conversations').insert({
+        id: validConvUuid,
+        is_group: false,
+        updated_at: now,
+      });
+    }
 
     const memberRows: { conversation_id: string; user_id: string }[] = [
       { conversation_id: validConvUuid, user_id: actualSenderId },
@@ -1718,7 +1730,9 @@ export async function sendRealMessageToSupabase(
     if (validReceiverUuid) {
       memberRows.push({ conversation_id: validConvUuid, user_id: validReceiverUuid });
     }
-    await supabase.from('conversation_members').insert(memberRows);
+    if (existingConv || validReceiverUuid) {
+      await supabase.from('conversation_members').insert(memberRows);
+    }
 
     // Attempt 1: Full message insert with conversation_id
     const fullPayload: any = {
@@ -1884,13 +1898,18 @@ export async function syncStoryToSupabase(story: UserStory): Promise<void> {
       ? story.id
       : generateConsistentUserId(`story_${validUserId}_${story.created_at}`);
 
+    // Ensure profile exists so foreign key on stories.user_id succeeds
+    const localProf = getLocalProfile();
+    if (localProf && localProf.id === validUserId && localProf.username) {
+      await syncProfileToSupabaseDirectory(localProf);
+    }
+
     await supabase.from('stories').upsert(
       {
         id: storyUuid,
         user_id: validUserId,
-        username: story.username,
-        avatar_url: story.avatar_url,
         media_url: story.media_url,
+        media_type: story.media_type || 'image',
         caption: story.caption || '',
         spark_reactions: story.spark_reactions || 0,
         created_at: story.created_at,
@@ -1903,5 +1922,176 @@ export async function syncStoryToSupabase(story: UserStory): Promise<void> {
   }
 }
 
+/**
+ * Fetches all active (non-expired) stories from Supabase and joins author profile metadata.
+ */
+export async function fetchActiveStoriesFromSupabase(): Promise<UserStory[]> {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = getSupabase();
+  if (!supabase) return [];
 
+  try {
+    const nowIso = new Date().toISOString();
+    const { data: rows, error } = await supabase
+      .from('stories')
+      .select('id, user_id, media_url, media_type, caption, spark_reactions, created_at, expires_at')
+      .gt('expires_at', nowIso)
+      .order('created_at', { ascending: false })
+      .limit(30);
 
+    if (error || !rows || rows.length === 0) return [];
+
+    const userIds = Array.from(new Set(rows.map((r: any) => r.user_id).filter(Boolean)));
+    const profileMap = new Map<string, { username: string; avatar_url: string }>();
+
+    if (userIds.length > 0) {
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('id, username, display_name, avatar_url')
+        .in('id', userIds);
+
+      if (profs) {
+        for (const p of profs) {
+          profileMap.set(p.id, {
+            username: p.username || p.display_name || 'SparkUser',
+            avatar_url:
+              p.avatar_url ||
+              `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+                p.username || p.id
+              )}&backgroundColor=f1f5f9`,
+          });
+        }
+      }
+    }
+
+    return rows.map((r: any) => {
+      const author = profileMap.get(r.user_id) || {
+        username: 'SparkUser',
+        avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${r.user_id}&backgroundColor=f1f5f9`,
+      };
+      return {
+        id: r.id,
+        user_id: r.user_id,
+        username: author.username,
+        avatar_url: author.avatar_url,
+        media_url: r.media_url,
+        media_type: r.media_type === 'video' ? 'video' : 'image',
+        caption: r.caption || undefined,
+        spark_reactions: r.spark_reactions || 0,
+        created_at: r.created_at,
+        expires_at: r.expires_at,
+      };
+    });
+  } catch (e) {
+    console.warn('Fetch active stories notice:', e);
+    return [];
+  }
+}
+
+/**
+ * Fetches today's saved daily quests for a user from Supabase `daily_quests` and merges with defaults.
+ */
+export async function fetchTodayQuestsFromSupabase(
+  userId: string,
+  defaultQuests: DailyQuest[]
+): Promise<DailyQuest[]> {
+  if (!userId || !isSupabaseConfigured()) return defaultQuests;
+  const supabase = getSupabase();
+  if (!supabase) return defaultQuests;
+
+  try {
+    const validUserId = isValidUuid(userId) ? userId : generateConsistentUserId(userId);
+    const today = new Date().toISOString().split('T')[0];
+
+    const { data, error } = await supabase
+      .from('daily_quests')
+      .select('*')
+      .eq('user_id', validUserId)
+      .eq('quest_date', today);
+
+    if (error || !data || data.length === 0) return defaultQuests;
+
+    return defaultQuests.map((dq) => {
+      const expectedUuid = generateConsistentUserId(`quest_${validUserId}_${today}_${dq.id}`);
+      const match = data.find((row: any) => row.id === expectedUuid || row.title === dq.title);
+      if (!match) return dq;
+      return {
+        ...dq,
+        progress: Math.max(dq.progress, typeof match.progress === 'number' ? match.progress : 0),
+        completed: Boolean(dq.completed || match.completed),
+      };
+    });
+  } catch {
+    return defaultQuests;
+  }
+}
+
+/**
+ * Fetches the real Weekly Leaderboard from Supabase `profiles`.
+ */
+export async function fetchRealLeaderboardFromSupabase(
+  currentProfile: UserProfile
+): Promise<LeaderboardEntry[]> {
+  if (!isSupabaseConfigured()) return [];
+  const supabase = getSupabase();
+  if (!supabase) return [];
+
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url, coins, weekly_coins, streak_days, equipped_frame')
+      .order('coins', { ascending: false })
+      .limit(20);
+
+    if (error || !data || data.length === 0) return [];
+
+    const entriesMap = new Map<string, LeaderboardEntry>();
+
+    for (const row of data) {
+      if (!row.id || !row.username) continue;
+      if (isDummyUserOrConversation(row.id, row.username)) continue;
+
+      const isSelf = row.id === currentProfile.id;
+      const score = isSelf
+        ? Math.max(currentProfile.coins || 0, currentProfile.weekly_coins || 0, row.coins || 0)
+        : Math.max(row.coins || 0, row.weekly_coins || 0);
+
+      entriesMap.set(row.id, {
+        user_id: row.id,
+        username: isSelf ? currentProfile.username : row.username,
+        avatar_url:
+          (isSelf ? currentProfile.avatar_url : row.avatar_url) ||
+          `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+            row.username
+          )}&backgroundColor=f1f5f9`,
+        weekly_coins: score,
+        streak_days: isSelf ? currentProfile.streak_days || 1 : row.streak_days || 1,
+        rank: 1,
+        is_current_user: isSelf,
+        equipped_frame: (isSelf ? currentProfile.equipped_frame : row.equipped_frame) || 'frame_pulsar',
+      });
+    }
+
+    if (currentProfile.id && currentProfile.username && !entriesMap.has(currentProfile.id)) {
+      entriesMap.set(currentProfile.id, {
+        user_id: currentProfile.id,
+        username: currentProfile.username,
+        avatar_url: currentProfile.avatar_url,
+        weekly_coins: Math.max(currentProfile.coins || 0, currentProfile.weekly_coins || 0),
+        streak_days: currentProfile.streak_days || 1,
+        rank: 1,
+        is_current_user: true,
+        equipped_frame: currentProfile.equipped_frame || 'frame_pulsar',
+      });
+    }
+
+    const sorted = Array.from(entriesMap.values()).sort((a, b) => b.weekly_coins - a.weekly_coins);
+    return sorted.map((item, idx) => ({
+      ...item,
+      rank: idx + 1,
+    }));
+  } catch (e) {
+    console.warn('Leaderboard fetch notice:', e);
+    return [];
+  }
+}

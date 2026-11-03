@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Check,
@@ -43,6 +43,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [displayName, setDisplayName] = useState(profile.display_name || profile.username);
   const [bio, setBio] = useState(profile.bio || '');
   const [selectedAvatarSeed, setSelectedAvatarSeed] = useState(profile.avatar_url);
+
+  useEffect(() => {
+    if (isOpen) {
+      setDisplayName(profile.display_name || profile.username || '');
+      setBio(profile.bio || '');
+      setSelectedAvatarSeed(profile.avatar_url);
+    }
+  }, [isOpen, profile.id, profile.display_name, profile.username, profile.bio, profile.avatar_url]);
 
   if (!isOpen) return null;
 

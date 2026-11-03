@@ -86,10 +86,10 @@ export const ShopModal: React.FC<ShopModalProps> = ({
       });
     } catch {}
 
-    const updatedUnlocked = [...profile.unlocked_items, item.id];
+    const updatedUnlocked = Array.from(new Set([...profile.unlocked_items, item.id]));
     const updated: UserProfile = {
       ...profile,
-      coins: profile.coins - item.price,
+      coins: Math.max(0, profile.coins - item.price),
       unlocked_items: updatedUnlocked,
     };
 
@@ -98,7 +98,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
     if (item.category === 'outfit') updated.equipped_outfit = item.id;
 
     onUpdateProfile(updated);
-    onDeductCoins(item.price);
+    onDeductCoins(0);
     setPurchaseToast(`Unlocked & equipped ${item.name}!`);
     setTimeout(() => setPurchaseToast(null), 2500);
   };

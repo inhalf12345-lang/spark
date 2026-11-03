@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, AlertCircle, Camera, Check } from 'lucide-react';
 import { UserProfile, UserStory } from '../types';
-import { compressImageFile } from '../lib/storage';
+import { compressImageFile, generateConsistentUserId } from '../lib/storage';
 import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
 
 interface CreateStoryModalProps {
@@ -107,8 +107,9 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({
     }
 
     const now = Date.now();
+    const storyUuid = generateConsistentUserId(`story_${profile.id}_${now}`);
     const newStory: UserStory = {
-      id: 'story_user_' + now,
+      id: storyUuid,
       user_id: profile.id,
       username: profile.username,
       avatar_url: profile.avatar_url,
@@ -120,22 +121,10 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({
       spark_reactions: 0,
     };
 
-    if (isSupabaseConfigured()) {
-      const supabase = getSupabase();
-      if (supabase) {
-        supabase
-          .from('stories')
-          .insert({
-            user_id: profile.id,
-            media_url: finalMediaUrl,
-            media_type: mediaType,
-            caption: caption.trim() || null,
-          })
-          .then();
-      }
-    }
-
     onStoryCreated(newStory);
+    setSelectedFile(null);
+    setPreviewUrl(null);
+    setCaption('');
     setIsProcessing(false);
     onClose();
   };

@@ -24,6 +24,7 @@ import {
   UserStory,
   RealConversation,
   PublicUserProfile,
+  LeaderboardEntry,
 } from './types';
 import {
   getLocalProfile,
@@ -48,6 +49,9 @@ import {
   syncDailyQuestsToSupabase,
   syncStoryToSupabase,
   deleteRealGroupConversation,
+  fetchActiveStoriesFromSupabase,
+  fetchTodayQuestsFromSupabase,
+  fetchRealLeaderboardFromSupabase,
 } from './lib/chatService';
 import {
   getOrCreateDeviceIdentityKeyPair,
@@ -73,6 +77,7 @@ export default function App() {
   const [isLoadingConversations, setIsLoadingConversations] = useState(false);
   const [quests, setQuests] = useState<DailyQuest[]>(getLocalQuests);
   const [stories, setStories] = useState<UserStory[]>(getLocalStories);
+  const [cloudLeaderboard, setCloudLeaderboard] = useState<LeaderboardEntry[]>([]);
 
   // Active chat state
   const [selectedFriend, setSelectedFriend] = useState<any | null>(null);
@@ -93,6 +98,44 @@ export default function App() {
   // Status & FX
   const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(isSupabaseConfigured());
   const [animatingCoins, setAnimatingCoins] = useState(false);
+
+  const loadCloudDataForUser = useCallback(async (userProf: UserProfile) => {
+    if (!userProf.id || !isSupabaseConfigured()) return;
+    try {
+      const [cloudStories, cloudQuests, lb] = await Promise.all([
+        fetchActiveStoriesFromSupabase(),
+        fetchTodayQuestsFromSupabase(userProf.id, getLocalQuests()),
+        fetchRealLeaderboardFromSupabase(userProf),
+      ]);
+
+      if (cloudStories.length > 0) {
+        setStories((prev) => {
+          const map = new Map<string, UserStory>();
+          for (const s of [...cloudStories, ...prev]) {
+            if (new Date(s.expires_at).getTime() > Date.now()) {
+              map.set(s.id, s);
+            }
+          }
+          const merged = Array.from(map.values()).sort(
+            (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          );
+          saveLocalStories(merged);
+          return merged;
+        });
+      }
+
+      if (cloudQuests.length > 0) {
+        setQuests(cloudQuests);
+        saveLocalQuests(cloudQuests);
+      }
+
+      if (lb.length > 0) {
+        setCloudLeaderboard(lb);
+      }
+    } catch (e) {
+      console.warn('Cloud data sync notice:', e);
+    }
+  }, []);
 
   // Fetch real conversations for current authenticated user
   const loadConversations = useCallback(async (userId: string) => {
@@ -128,6 +171,7 @@ export default function App() {
         saveLocalProfile(persisted);
         setIsAuthenticated(true);
         loadConversations(persisted.id);
+        loadCloudDataForUser(persisted);
         syncProfileToSupabaseDirectory(persisted).catch(() => {});
         syncDailyQuestsToSupabase(persisted.id, getLocalQuests()).catch(() => {});
         return true;
@@ -336,6 +380,7 @@ export default function App() {
     saveLocalProfile(newProfile);
     setIsAuthenticated(true);
     loadConversations(newProfile.id);
+    loadCloudDataForUser(newProfile);
     syncProfileToSupabaseDirectory(newProfile).catch(() => {});
     syncDailyQuestsToSupabase(newProfile.id, quests).catch(() => {});
 
@@ -469,16 +514,22 @@ export default function App() {
             .eq('id', prev.id)
             .then();
         }
+        fetchRealLeaderboardFromSupabase(updated)
+          .then((lb) => {
+            if (lb.length > 0) setCloudLeaderboard(lb);
+          })
+          .catch(() => {});
       }
 
       return updated;
     });
 
-    // Advance daily quest & sync to Supabase daily_quests table
+    // Advance daily quests & sync to Supabase daily_quests table
     setQuests((prevQuests) => {
       const nextQuests = prevQuests.map((q) => {
-        if (q.id === 'quest_1' && !q.completed) {
-          const nextProg = q.progress + 1;
+        if (q.completed) return q;
+        if (q.id === 'quest_1' || q.id === 'quest_2' || q.id === 'quest_3') {
+          const nextProg = Math.min(q.goal, q.progress + 1);
           return {
             ...q,
             progress: nextProg,
@@ -498,11 +549,13 @@ export default function App() {
     setAnimatingCoins(true);
     setTimeout(() => setAnimatingCoins(false), 500);
 
-    setProfile((prev) => {
-      const updated = { ...prev, coins: Math.max(0, prev.coins - amount) };
-      saveLocalProfile(updated);
-      return updated;
-    });
+    if (amount > 0) {
+      setProfile((prev) => {
+        const updated = { ...prev, coins: Math.max(0, prev.coins - amount) };
+        saveLocalProfile(updated);
+        return updated;
+      });
+    }
   };
 
   const handleClaimQuest = (questId: string) => {
@@ -537,15 +590,54 @@ export default function App() {
     syncProfileToSupabaseDirectory(updated).catch((err) => {
       console.warn('Sync profile on save notice:', err);
     });
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      if (supabase && updated.id) {
+        supabase
+          .from('profiles')
+          .update({
+            display_name: updated.display_name,
+            avatar_url: updated.avatar_url,
+            bio: updated.bio || '',
+            coins: updated.coins,
+            equipped_frame: updated.equipped_frame,
+            equipped_theme: updated.equipped_theme,
+            equipped_outfit: updated.equipped_outfit,
+            unlocked_items: updated.unlocked_items,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', updated.id)
+          .then();
+      }
+    }
   };
 
   const handleStoryCreated = (story: UserStory) => {
     setStories((prev) => {
-      const next = [story, ...prev];
+      const next = [story, ...prev.filter((s) => s.id !== story.id)];
       saveLocalStories(next);
       return next;
     });
-    syncStoryToSupabase(story).catch(() => {});
+    syncStoryToSupabase(story)
+      .then(() => fetchActiveStoriesFromSupabase())
+      .then((cloudStories) => {
+        if (cloudStories.length > 0) {
+          setStories((prev) => {
+            const map = new Map<string, UserStory>();
+            for (const s of [...cloudStories, ...prev]) {
+              if (new Date(s.expires_at).getTime() > Date.now()) {
+                map.set(s.id, s);
+              }
+            }
+            const merged = Array.from(map.values()).sort(
+              (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            );
+            saveLocalStories(merged);
+            return merged;
+          });
+        }
+      })
+      .catch(() => {});
   };
 
   const handleReactSpark = (storyId: string) => {
@@ -568,6 +660,7 @@ export default function App() {
     setIsSupabaseConnected(isSupabaseConfigured());
     if (profile.id && profile.username) {
       loadConversations(profile.id);
+      loadCloudDataForUser(profile);
       syncProfileToSupabaseDirectory(profile).catch((err) => {
         console.warn('Auto-sync profile on connect notice:', err);
       });
@@ -575,20 +668,33 @@ export default function App() {
     }
   };
 
-  const leaderboardEntries = getWeeklyLeaderboard(
-    profile,
-    conversations
-      .filter((c) => Boolean(c && c.other_user))
-      .map((c) => ({
-        id: c.other_user?.id || c.id,
-        username: c.other_user?.username || 'Friend',
-        avatar_url: c.other_user?.avatar_url || '',
-        streak_days: c.other_user?.streak_days || 1,
-        is_online: true,
-        orbit_angle: 45,
-        distance: 140,
-      }))
-  );
+  const leaderboardEntries =
+    cloudLeaderboard.length > 0
+      ? cloudLeaderboard.map((entry) =>
+          entry.user_id === profile.id
+            ? {
+                ...entry,
+                username: profile.username,
+                avatar_url: profile.avatar_url,
+                equipped_frame: profile.equipped_frame || entry.equipped_frame,
+                weekly_coins: Math.max(profile.coins || 0, profile.weekly_coins || 0, entry.weekly_coins),
+              }
+            : entry
+        )
+      : getWeeklyLeaderboard(
+          profile,
+          conversations
+            .filter((c) => Boolean(c && c.other_user))
+            .map((c) => ({
+              id: c.other_user?.id || c.id,
+              username: c.other_user?.username || 'Friend',
+              avatar_url: c.other_user?.avatar_url || '',
+              streak_days: c.other_user?.streak_days || 1,
+              is_online: true,
+              orbit_angle: 45,
+              distance: 140,
+            }))
+        );
 
   // Splash Loading State
   if (isSessionInitializing) {

@@ -213,30 +213,41 @@ export function getLocalStoredConversations(userId: string): any[] {
     if (c.other_user && isDummyUserOrConversation(c.other_user.id, c.other_user.username)) {
       return false;
     }
+    // Never show a 1-on-1 conversation where the other user is the current user
+    if (!c.is_group && userId && c.other_user?.id === userId) {
+      return false;
+    }
+    // Never show corrupted nameless 1-member group rows
+    if (c.is_group && (!c.name || c.name === 'Group Chat') && (c.member_count || 0) <= 1) {
+      return false;
+    }
     return true;
   };
 
   try {
-    const rawUser = userId ? localStorage.getItem(`${LOCAL_CONVERSATIONS_KEY}_${userId}`) : null;
-    if (rawUser) {
-      const parsed = JSON.parse(rawUser);
-      if (Array.isArray(parsed)) {
-        parsed.forEach((c: any) => {
-          if (isCleanConv(c)) {
-            mergedMap.set(c.id, c);
-          }
-        });
+    if (userId) {
+      const rawUser = localStorage.getItem(`${LOCAL_CONVERSATIONS_KEY}_${userId}`);
+      if (rawUser) {
+        const parsed = JSON.parse(rawUser);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((c: any) => {
+            if (isCleanConv(c)) {
+              mergedMap.set(c.id, c);
+            }
+          });
+        }
       }
-    }
-    const rawGlobal = localStorage.getItem(LOCAL_CONVERSATIONS_KEY);
-    if (rawGlobal) {
-      const parsedGlobal = JSON.parse(rawGlobal);
-      if (Array.isArray(parsedGlobal)) {
-        parsedGlobal.forEach((c: any) => {
-          if (isCleanConv(c) && !mergedMap.has(c.id)) {
-            mergedMap.set(c.id, c);
-          }
-        });
+    } else {
+      const rawGlobal = localStorage.getItem(LOCAL_CONVERSATIONS_KEY);
+      if (rawGlobal) {
+        const parsedGlobal = JSON.parse(rawGlobal);
+        if (Array.isArray(parsedGlobal)) {
+          parsedGlobal.forEach((c: any) => {
+            if (isCleanConv(c) && !mergedMap.has(c.id)) {
+              mergedMap.set(c.id, c);
+            }
+          });
+        }
       }
     }
   } catch {}
@@ -606,8 +617,20 @@ export function saveLocalFriends(friends: FriendOrb[]) {
   } catch {}
 }
 
+const QUESTS_DATE_KEY = 'spark_local_quests_date_v1';
+
 export function getLocalQuests(): DailyQuest[] {
   try {
+    const today = new Date().toISOString().split('T')[0];
+    const savedDate = localStorage.getItem(QUESTS_DATE_KEY);
+    if (savedDate && savedDate !== today) {
+      localStorage.setItem(QUESTS_DATE_KEY, today);
+      localStorage.setItem(QUESTS_KEY, JSON.stringify(DEFAULT_DAILY_QUESTS));
+      return DEFAULT_DAILY_QUESTS;
+    }
+    if (!savedDate) {
+      localStorage.setItem(QUESTS_DATE_KEY, today);
+    }
     const raw = localStorage.getItem(QUESTS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
@@ -619,6 +642,8 @@ export function getLocalQuests(): DailyQuest[] {
 
 export function saveLocalQuests(quests: DailyQuest[]) {
   try {
+    const today = new Date().toISOString().split('T')[0];
+    localStorage.setItem(QUESTS_DATE_KEY, today);
     localStorage.setItem(QUESTS_KEY, JSON.stringify(quests));
   } catch {}
 }
