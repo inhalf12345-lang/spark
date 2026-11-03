@@ -17,6 +17,7 @@ import {
   SlidersHorizontal,
   AlertCircle,
   X,
+  RefreshCw,
 } from 'lucide-react';
 import { DailyQuest, PublicUserProfile, RealConversation, UserProfile, UserStory } from '../types';
 import { searchRealUsers, buildDirectUsernameProfile } from '../lib/chatService';
@@ -44,6 +45,7 @@ interface HomeHubProps {
   onOpenCreateGroup?: () => void;
   onDeleteGroup?: (conversationId: string) => Promise<void> | void;
   onDeleteConversation?: (conversationId: string) => Promise<void> | void;
+  onRefreshConversations?: () => void;
   onOpenDataPrecision?: () => void;
 }
 
@@ -65,6 +67,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
   onOpenCreateGroup,
   onDeleteGroup,
   onDeleteConversation,
+  onRefreshConversations,
   onOpenDataPrecision,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,6 +76,17 @@ export const HomeHub: React.FC<HomeHubProps> = ({
   const [isQuestsExpanded, setIsQuestsExpanded] = useState(false);
   const [conversationToDelete, setConversationToDelete] = useState<RealConversation | null>(null);
   const [isDeletingConversation, setIsDeletingConversation] = useState(false);
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (isManualRefreshing || !onRefreshConversations) return;
+    setIsManualRefreshing(true);
+    try {
+      await onRefreshConversations();
+    } finally {
+      setTimeout(() => setIsManualRefreshing(false), 600);
+    }
+  };
 
   // Precision Settings
   const [precisionSettings, setPrecisionSettings] = useState<DataPrecisionSettings>(getPrecisionSettings());
@@ -181,8 +195,8 @@ export const HomeHub: React.FC<HomeHubProps> = ({
             </div>
           </div>
 
-          {/* Light search field & Compact Find Someone button */}
-          <div className="flex items-center gap-2.5">
+          {/* Light search field & Compact action buttons */}
+          <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
@@ -194,20 +208,36 @@ export const HomeHub: React.FC<HomeHubProps> = ({
               />
             </div>
 
+            {onRefreshConversations && (
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={isManualRefreshing || isLoadingConversations}
+                className="h-10 w-10 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200/70 text-slate-600 hover:text-[#ff3b69] flex items-center justify-center transition-all shrink-0 active:scale-95 disabled:opacity-50"
+                title="Refresh and sync conversations"
+              >
+                <RefreshCw
+                  className={`w-4 h-4 ${
+                    isManualRefreshing || isLoadingConversations ? 'animate-spin text-[#ff3b69]' : ''
+                  }`}
+                />
+              </button>
+            )}
+
             {onOpenCreateGroup && (
               <button
                 onClick={onOpenCreateGroup}
-                className="h-10 px-3.5 rounded-full bg-rose-50 hover:bg-rose-100 border border-rose-200/70 text-[#ff3b69] text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 active:scale-95 whitespace-nowrap"
+                className="h-10 px-3 rounded-full bg-rose-50 hover:bg-rose-100 border border-rose-200/70 text-[#ff3b69] text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 active:scale-95 whitespace-nowrap"
                 title="Create Group Chat"
               >
                 <Users className="w-4 h-4 text-[#ff3b69]" />
-                <span>New Group</span>
+                <span className="hidden xs:inline">New Group</span>
               </button>
             )}
 
             <button
               onClick={onOpenAddFriend}
-              className="h-10 px-3.5 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-pink-500/20 hover:opacity-95 active:scale-95 transition-all shrink-0"
+              className="h-10 px-3 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-pink-500/20 hover:opacity-95 active:scale-95 transition-all shrink-0"
               title="Search by Username & Start Chat"
             >
               <UserPlus className="w-4 h-4" />

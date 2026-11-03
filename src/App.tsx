@@ -314,7 +314,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Realtime conversation updates: whenever a new message arrives, refresh conversations list
+  // Realtime conversation updates: whenever a new message, group, or conversation arrives, refresh conversations list
   useEffect(() => {
     if (!isAuthenticated || !profile.id || !isSupabaseConfigured()) return;
 
@@ -322,7 +322,10 @@ export default function App() {
     if (!supabase) return;
 
     let channel: any = null;
+    let broadcastChannel: any = null;
+
     try {
+      // 1. Realtime postgres changes channel
       channel = supabase
         .channel(`user_conv_refresh_${profile.id}`)
         .on(
@@ -334,20 +337,89 @@ export default function App() {
           },
           (payload) => {
             const newMsg = payload.new as any;
-            if (newMsg && (newMsg.receiver_id === profile.id || newMsg.sender_id === profile.id)) {
+            if (
+              !newMsg ||
+              newMsg.receiver_id === profile.id ||
+              newMsg.sender_id === profile.id ||
+              !newMsg.receiver_id // Group messages have no receiver_id
+            ) {
               loadConversations(profile.id);
             }
           }
         )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'conversation_members',
+          },
+          () => {
+            loadConversations(profile.id);
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'conversations',
+          },
+          () => {
+            loadConversations(profile.id);
+          }
+        )
+        .subscribe();
+
+      // 2. Broadcast channel for instantaneous cross-device group creation notifications
+      broadcastChannel = supabase
+        .channel('spark_global_broadcast')
+        .on('broadcast', { event: 'conversation_created' }, () => {
+          loadConversations(profile.id);
+        })
         .subscribe();
     } catch (err) {
       console.warn('Realtime channel subscription notice:', err);
     }
 
+    // 3. Periodic lightweight background polling so mobile devices that throttle WebSockets stay 100% in sync
+    const pollTimer = setInterval(() => {
+      loadConversations(profile.id);
+    }, 4500);
+
+    // 4. Focus & visibility listener: immediately reload when user switches back to this browser tab or phone wakes up
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        loadConversations(profile.id);
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    // 5. Custom in-app event listeners
+    const handleCustomRefresh = () => {
+      loadConversations(profile.id);
+    };
+    window.addEventListener('spark_conversation_created', handleCustomRefresh);
+    window.addEventListener('spark_conversation_deleted', handleCustomRefresh);
+    window.addEventListener('spark_refresh_conversations', handleCustomRefresh);
+
     return () => {
+      clearInterval(pollTimer);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('spark_conversation_created', handleCustomRefresh);
+      window.removeEventListener('spark_conversation_deleted', handleCustomRefresh);
+      window.removeEventListener('spark_refresh_conversations', handleCustomRefresh);
+
       if (channel) {
         try {
           supabase.removeChannel(channel);
+        } catch {}
+      }
+      if (broadcastChannel) {
+        try {
+          supabase.removeChannel(broadcastChannel);
         } catch {}
       }
     };
@@ -791,6 +863,7 @@ export default function App() {
             onOpenCreateGroup={() => setIsCreateGroupModalOpen(true)}
             onDeleteGroup={handleDeleteGroup}
             onDeleteConversation={handleDeleteConversation}
+            onRefreshConversations={() => loadConversations(profile.id)}
             onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
           />
         </main>

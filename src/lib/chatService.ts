@@ -946,13 +946,19 @@ export async function fetchUserRealConversations(
             const members = convMembersMap.get(convId) || [];
             const isGroup = Boolean(convMeta?.is_group);
 
-            const { data: lastMsgData } = await supabase
-              .from('messages')
-              .select('id, content, media_url, ciphertext, iv, sender_id, created_at')
-              .eq('conversation_id', convId)
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
+            let lastMsgData: any = null;
+            try {
+              const { data } = await supabase
+                .from('messages')
+                .select('id, content, media_url, ciphertext, iv, sender_id, created_at')
+                .eq('conversation_id', convId)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              lastMsgData = data;
+            } catch (msgErr) {
+              console.warn('Failed to fetch last message for conv:', convId, msgErr);
+            }
 
             let snippet = 'Tap to start chatting...';
             if (lastMsgData) {
@@ -966,9 +972,6 @@ export async function fetchUserRealConversations(
             }
 
             if (isGroup) {
-              if ((!convMeta?.name || !convMeta.name.trim()) && members.length <= 1) {
-                continue;
-              }
               const groupMembersList = members
                 .map((m: any) => m.profiles)
                 .filter(Boolean)
@@ -1257,6 +1260,43 @@ export async function createRealGroupConversation(
     if (membershipRows.length > 0) {
       await supabase.from('conversation_members').insert(membershipRows);
     }
+
+    // 3. Insert initial group creation message so messages listener fires and conversation sorts to top for all members
+    try {
+      await supabase.from('messages').insert({
+        id: generateConsistentUserId(`init_msg_${groupUuid}`),
+        conversation_id: groupUuid,
+        sender_id: creatorId,
+        content: `Group "${cleanName}" created`,
+        created_at: new Date().toISOString(),
+      });
+    } catch (msgErr) {
+      console.warn('Initial group message note:', msgErr);
+    }
+
+    // 4. Broadcast instant notification across all connected clients
+    try {
+      const channel = supabase.channel('spark_global_broadcast');
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          channel.send({
+            type: 'broadcast',
+            event: 'conversation_created',
+            payload: { conversationId: groupUuid, memberIds: allMemberIds },
+          });
+          setTimeout(() => supabase.removeChannel(channel), 1500);
+        }
+      });
+    } catch {}
+
+    // 5. Dispatch window event locally
+    try {
+      if (typeof window !== 'undefined' && typeof window.CustomEvent === 'function') {
+        window.dispatchEvent(
+          new CustomEvent('spark_conversation_created', { detail: { conversationId: groupUuid } })
+        );
+      }
+    } catch {}
 
     return saveLocalGroupRecord(groupUuid);
   } catch {
