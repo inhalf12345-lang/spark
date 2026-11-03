@@ -15,38 +15,8 @@
   </head>
   <body class="bg-white text-slate-800" style="margin:0;padding:0;min-height:100vh;background:linear-gradient(135deg,#7ad1f9 0%,#d8b4fe 45%,#f472b6 80%,#fb7185 100%);font-family:'Plus Jakarta Sans',system-ui,-apple-system,sans-serif;">
     <div id="root"></div>
-    <div id="spark-boot-loader" style="position:fixed;inset:0;z-index:9999;pointer-events:none;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;text-align:center;">
-      <div style="background:rgba(255,255,255,0.92);backdrop-filter:blur(16px);border-radius:28px;padding:32px 28px;box-shadow:0 20px 50px rgba(15,23,42,0.12);max-width:340px;width:100%;display:flex;flex-direction:column;align-items:center;gap:14px;">
-        <div style="width:56px;height:56px;border-radius:9999px;background:linear-gradient(135deg,#ff3b69,#fb7185);display:flex;align-items:center;justify-content:center;color:#fff;font-size:26px;font-weight:900;box-shadow:0 10px 24px rgba(255,59,105,0.35);">⚡</div>
-        <div style="font-family:'Outfit',system-ui,sans-serif;font-weight:900;font-size:22px;color:#0f172a;letter-spacing:-0.02em;">Spark</div>
-        <div style="font-size:13px;font-weight:600;color:#64748b;">Loading...</div>
-      </div>
-    </div>
     <script>
       (function () {
-        var root = document.getElementById('root');
-        function removeBootLoader() {
-          var el = document.getElementById('spark-boot-loader');
-          if (el && el.parentNode) {
-            el.parentNode.removeChild(el);
-          }
-        }
-        if (root && typeof MutationObserver !== 'undefined') {
-          var obs = new MutationObserver(function () {
-            if (root.childNodes.length > 0 || window.__SPARK_MOUNTED__) {
-              removeBootLoader();
-              obs.disconnect();
-            }
-          });
-          obs.observe(root, { childList: true });
-        }
-        var checkInterval = setInterval(function () {
-          if ((root && root.childNodes.length > 0) || window.__SPARK_MOUNTED__) {
-            removeBootLoader();
-            clearInterval(checkInterval);
-          }
-        }, 100);
-
         var loaded = false;
         function loadCssChain(urls, idx) {
           if (idx >= urls.length) return;
@@ -72,13 +42,8 @@
         window.__sparkLoadStaticBundle = function () {
           if (loaded || window.__SPARK_MOUNTED__) return;
           loaded = true;
-          var isViteDev = Boolean(document.querySelector('script[src*="@vite/client"]'));
-          var cssUrls = isViteDev
-            ? ['./gh-pages-bundle/app.css', './assets/app.css', './public/gh-pages-bundle/app.css']
-            : ['./public/gh-pages-bundle/app.css', './gh-pages-bundle/app.css', './assets/app.css'];
-          var jsUrls = isViteDev
-            ? ['./gh-pages-bundle/app.js', './assets/app.js', './public/gh-pages-bundle/app.js']
-            : ['./public/gh-pages-bundle/app.js', './gh-pages-bundle/app.js', './assets/app.js'];
+          var cssUrls = ['./public/gh-pages-bundle/app.css', './gh-pages-bundle/app.css', './assets/app.css'];
+          var jsUrls = ['./public/gh-pages-bundle/app.js', './gh-pages-bundle/app.js', './assets/app.js'];
           loadCssChain(cssUrls, 0);
           loadJsChain(jsUrls, 0);
         };
@@ -89,14 +54,8 @@
       (function () {
         var isViteDev = Boolean(document.querySelector('script[src*="@vite/client"]'));
         var hasRawTsx = Boolean(document.querySelector('script[src*="/src/main.tsx"]'));
-        if (!isViteDev && hasRawTsx) {
+        if (!isViteDev && hasRawTsx && window.__sparkLoadStaticBundle) {
           window.__sparkLoadStaticBundle();
-        } else {
-          setTimeout(function () {
-            if (!window.__SPARK_MOUNTED__ && window.__sparkLoadStaticBundle) {
-              window.__sparkLoadStaticBundle();
-            }
-          }, 2500);
         }
       })();
     </script>
