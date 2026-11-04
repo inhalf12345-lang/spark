@@ -72,7 +72,7 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
 
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
-  const [showVapidGenerator, setShowVapidGenerator] = useState(false);
+  const [showVapidGenerator, setShowVapidGenerator] = useState(true);
   const [generatedKeys, setGeneratedKeys] = useState<{
     publicKey: string;
     privateKey: string;
@@ -124,6 +124,16 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
     if (isOpen) {
       setStatusMessage(null);
       refreshState();
+      if (!generatedKeys) {
+        generateLocalVapidKeyPairInBrowser()
+          .then((pair) => {
+            setGeneratedKeys(pair);
+            if (!getActiveVapidPublicKey()) {
+              setCustomVapidPublicKey(pair.publicKey);
+            }
+          })
+          .catch(() => {});
+      }
     }
   }, [isOpen, profile.id]);
 

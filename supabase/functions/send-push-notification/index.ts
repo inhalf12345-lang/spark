@@ -52,11 +52,17 @@ Deno.serve(async (req: Request) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-    const vapidPublicKey =
-      Deno.env.get('VAPID_PUBLIC_KEY') ??
-      'BJgUZPhdUoOEDDMaETACOGKwyAk8kQNvvuZrQkB8EiV7McXinQxaPnnHh2Vax0xqY2TSkx1WX1I8dW9K5l3sXYk';
-    const vapidPrivateKey = Deno.env.get('VAPID_PRIVATE_KEY') ?? '';
+    const vapidPublicKey = (Deno.env.get('VAPID_PUBLIC_KEY') ?? '').trim();
+    const vapidPrivateKey = (Deno.env.get('VAPID_PRIVATE_KEY') ?? '').trim();
     const vapidSubject = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:notifications@spark-app.local';
+
+    // Allow client devices to fetch the public VAPID key directly from the Edge Function via GET
+    if (req.method === 'GET') {
+      return new Response(
+        JSON.stringify({ publicKey: vapidPublicKey }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     if (!supabaseUrl || !supabaseServiceRoleKey) {
       return new Response(
@@ -65,9 +71,9 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    if (!vapidPrivateKey) {
+    if (!vapidPublicKey || !vapidPrivateKey) {
       return new Response(
-        JSON.stringify({ error: 'Missing VAPID_PRIVATE_KEY in Edge Function secrets' }),
+        JSON.stringify({ error: 'Missing VAPID_PUBLIC_KEY or VAPID_PRIVATE_KEY in Edge Function secrets' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -172,7 +178,7 @@ Deno.serve(async (req: Request) => {
     // 3. Check user-level notification preferences (respect global disable, DM/group toggles, and muted_conversations)
     const { data: prefsRows } = await supabase
       .from('notification_preferences')
-      .select('user_id, push_enabled, dm_enabled, group_enabled, muted_conversations')
+      .select('*')
       .in('user_id', targetIds);
 
     const prefsMap = new Map<string, any>();
@@ -187,7 +193,7 @@ Deno.serve(async (req: Request) => {
       if (!pref) return true; // Default enabled if no custom preference row
       if (pref.push_enabled === false) return false;
       if (isGroup && pref.group_enabled === false) return false;
-      if (!isGroup && pref.dm_enabled === false) return false;
+      if (!isGroup && (pref.dm_enabled === false || pref.direct_enabled === false)) return false;
       if (
         conversationId &&
         Array.isArray(pref.muted_conversations) &&

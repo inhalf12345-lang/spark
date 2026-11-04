@@ -257,6 +257,22 @@ export async function subscribeUserToWebPush(userId: string): Promise<{
     // 3. Check for existing subscription; if it was created with an older/invalidated VAPID key, unsubscribe and rotate it
     let pushSub = await registration.pushManager.getSubscription();
     let vapidKey = getActiveVapidPublicKey();
+
+    // Try fetching the canonical VAPID_PUBLIC_KEY from the Supabase Edge Function so all devices stay in sync
+    try {
+      const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL || 'https://zyyaeuiprnrezuuqdmyt.supabase.co';
+      const resp = await fetch(`${supabaseUrl}/functions/v1/send-push-notification`, {
+        method: 'GET',
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.publicKey && typeof data.publicKey === 'string' && data.publicKey.trim().length > 40) {
+          vapidKey = data.publicKey.trim();
+          setCustomVapidPublicKey(vapidKey);
+        }
+      }
+    } catch {}
+
     if (!vapidKey || vapidKey.length < 40) {
       const generated = await generateLocalVapidKeyPairInBrowser();
       setCustomVapidPublicKey(generated.publicKey);
