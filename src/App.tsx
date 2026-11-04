@@ -138,18 +138,55 @@ export default function App() {
     }
   }, []);
 
+  // Helper to compare conversations list and prevent redundant re-renders
+  const areConversationsEqual = (a: RealConversation[], b: RealConversation[]): boolean => {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const itemA = a[i];
+      const itemB = b[i];
+      if (!itemA || !itemB) return false;
+      if (
+        itemA.id !== itemB.id ||
+        itemA.name !== itemB.name ||
+        itemA.updated_at !== itemB.updated_at ||
+        itemA.has_unread !== itemB.has_unread ||
+        itemA.member_count !== itemB.member_count ||
+        itemA.last_message?.id !== itemB.last_message?.id ||
+        itemA.last_message?.content !== itemB.last_message?.content ||
+        itemA.last_message?.created_at !== itemB.last_message?.created_at ||
+        itemA.other_user?.id !== itemB.other_user?.id
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   // Fetch real conversations for current authenticated user
-  const loadConversations = useCallback(async (userId: string) => {
+  const loadConversations = useCallback(async (userId: string, isInitial = false) => {
     if (!userId) return;
-    setIsLoadingConversations(true);
+    if (isInitial) {
+      setIsLoadingConversations(true);
+    }
     try {
       const realConvs = await fetchUserRealConversations(userId);
-      setConversations(realConvs);
+      setConversations((prev) => {
+        if (areConversationsEqual(prev, realConvs)) {
+          return prev;
+        }
+        return realConvs;
+      });
     } catch (e) {
       console.warn('Error loading conversations:', e);
-      setConversations([]);
+      if (isInitial) {
+        setConversations([]);
+      }
     } finally {
-      setIsLoadingConversations(false);
+      if (isInitial) {
+        setIsLoadingConversations(false);
+      }
     }
   }, []);
 
@@ -171,7 +208,7 @@ export default function App() {
         setProfile(persisted);
         saveLocalProfile(persisted);
         setIsAuthenticated(true);
-        loadConversations(persisted.id);
+        loadConversations(persisted.id, true);
         loadCloudDataForUser(persisted);
         syncProfileToSupabaseDirectory(persisted).catch(() => {});
         syncDailyQuestsToSupabase(persisted.id, getLocalQuests()).catch(() => {});
@@ -226,7 +263,7 @@ export default function App() {
         if (profileData && profileData.username) {
           syncProfileFromDatabase(session.user, profileData);
           setIsAuthenticated(true);
-          loadConversations(session.user.id);
+          loadConversations(session.user.id, true);
           syncDailyQuestsToSupabase(session.user.id, getLocalQuests()).catch(() => {});
 
           // Initialize local device ECDH identity key and sync public key to Supabase
@@ -266,7 +303,7 @@ export default function App() {
           if (profileData && profileData.username) {
             syncProfileFromDatabase(session.user, profileData);
             setIsAuthenticated(true);
-            loadConversations(session.user.id);
+            loadConversations(session.user.id, true);
             syncDailyQuestsToSupabase(session.user.id, getLocalQuests()).catch(() => {});
 
             getOrCreateDeviceIdentityKeyPair(session.user.id)
@@ -323,6 +360,22 @@ export default function App() {
 
     let channel: any = null;
     let broadcastChannel: any = null;
+    let fallbackPollTimer: any = null;
+
+    const startFallbackPolling = () => {
+      if (!fallbackPollTimer) {
+        fallbackPollTimer = setInterval(() => {
+          loadConversations(profile.id);
+        }, 20000); // Lightweight 20s fallback activated only when Realtime is disconnected
+      }
+    };
+
+    const stopFallbackPolling = () => {
+      if (fallbackPollTimer) {
+        clearInterval(fallbackPollTimer);
+        fallbackPollTimer = null;
+      }
+    };
 
     try {
       // 1. Realtime postgres changes channel
@@ -369,7 +422,13 @@ export default function App() {
             loadConversations(profile.id);
           }
         )
-        .subscribe();
+        .subscribe((status: string) => {
+          if (status === 'SUBSCRIBED') {
+            stopFallbackPolling();
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            startFallbackPolling();
+          }
+        });
 
       // 2. Broadcast channel for instantaneous cross-device group creation notifications
       broadcastChannel = supabase
@@ -380,23 +439,24 @@ export default function App() {
         .subscribe();
     } catch (err) {
       console.warn('Realtime channel subscription notice:', err);
+      startFallbackPolling();
     }
 
-    // 3. Periodic lightweight background polling so mobile devices that throttle WebSockets stay 100% in sync
-    const pollTimer = setInterval(() => {
-      loadConversations(profile.id);
-    }, 4500);
-
-    // 4. Focus & visibility listener: immediately reload when user switches back to this browser tab or phone wakes up
+    // 3. Focus & visibility listener: reload when user switches back to this browser tab or phone wakes up (throttled)
+    let lastFocusRefresh = 0;
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
-        loadConversations(profile.id);
+        const now = Date.now();
+        if (now - lastFocusRefresh > 4000) {
+          lastFocusRefresh = now;
+          loadConversations(profile.id);
+        }
       }
     };
     window.addEventListener('focus', handleVisibilityOrFocus);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
-    // 5. Custom in-app event listeners
+    // 4. Custom in-app event listeners
     const handleCustomRefresh = () => {
       loadConversations(profile.id);
     };
@@ -405,7 +465,7 @@ export default function App() {
     window.addEventListener('spark_refresh_conversations', handleCustomRefresh);
 
     return () => {
-      clearInterval(pollTimer);
+      stopFallbackPolling();
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('spark_conversation_created', handleCustomRefresh);
@@ -414,11 +474,13 @@ export default function App() {
 
       if (channel) {
         try {
+          channel.unsubscribe();
           supabase.removeChannel(channel);
         } catch {}
       }
       if (broadcastChannel) {
         try {
+          broadcastChannel.unsubscribe();
           supabase.removeChannel(broadcastChannel);
         } catch {}
       }
@@ -452,7 +514,7 @@ export default function App() {
     setProfile(newProfile);
     saveLocalProfile(newProfile);
     setIsAuthenticated(true);
-    loadConversations(newProfile.id);
+    loadConversations(newProfile.id, true);
     loadCloudDataForUser(newProfile);
     syncProfileToSupabaseDirectory(newProfile).catch(() => {});
     syncDailyQuestsToSupabase(newProfile.id, quests).catch(() => {});
@@ -551,7 +613,6 @@ export default function App() {
   const handleDeleteGroup = handleDeleteConversation;
 
   const handleGroupCreated = async (newConvId: string) => {
-    await loadConversations(profile.id);
     const refreshed = await fetchUserRealConversations(profile.id);
     setConversations(refreshed);
     const newGroup = refreshed.find((c) => c.id === newConvId);

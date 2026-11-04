@@ -28,6 +28,7 @@ import {
   evaluateMessageReward,
   appendCachedMessage,
   saveCachedMessages,
+  getCachedMessages,
   getLocalStoredConversations,
 } from '../lib/storage';
 import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
@@ -155,6 +156,40 @@ const GroupChatImage: React.FC<{
   );
 };
 
+// Helper to check if two message instances represent the same message (prevents Realtime / HTTP send race duplicates)
+function isSameOrDuplicateMessage(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.id && b.id && a.id === b.id) return true;
+  const isSameSender = a.sender_id === b.sender_id;
+  const isSameContent = (a.content || '').trim() === (b.content || '').trim();
+  const isSameMedia = (a.media_url || '') === (b.media_url || '');
+  if (isSameSender && isSameContent && isSameMedia) {
+    if (a.created_at && b.created_at) {
+      const timeDiff = Math.abs(new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      if (timeDiff < 5000) return true;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+function mergeAndDeduplicateMessages(existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  const result = [...existing];
+  for (const inc of incoming) {
+    const existingIndex = result.findIndex((m) => isSameOrDuplicateMessage(m, inc));
+    if (existingIndex >= 0) {
+      result[existingIndex] = {
+        ...result[existingIndex],
+        ...inc,
+        content: inc.content && !inc.decryption_error ? inc.content : result[existingIndex].content,
+      };
+    } else {
+      result.push(inc);
+    }
+  }
+  return result.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+}
+
 export const ChatView: React.FC<ChatViewProps> = ({
   friend,
   profile,
@@ -165,19 +200,37 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onGroupDeleted,
   onDeleteChat,
 }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const activeConvId = conversationId || friend.conversation_id || friend.id || 'default_conv';
+
+  // Initialize immediately from cached device messages so screen is never blank or stuck loading
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    return getCachedMessages(activeConvId);
+  });
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(() => {
+    return getCachedMessages(activeConvId).length === 0;
+  });
   const [isKeyNegotiating, setIsKeyNegotiating] = useState(!friend.is_group);
   const [conversationKey, setConversationKey] = useState<CryptoKey | null>(null);
+  const conversationKeyRef = useRef<CryptoKey | null>(null);
+
+  useEffect(() => {
+    conversationKeyRef.current = conversationKey;
+  }, [conversationKey]);
+
+  // Keep local messages updated if active conversation changes
+  useEffect(() => {
+    const cached = getCachedMessages(activeConvId);
+    setMessages(cached);
+    setIsLoadingMessages(cached.length === 0);
+  }, [activeConvId]);
+
   const [isE2EEActive, setIsE2EEActive] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [isExiting, setIsExiting] = useState(false);
   const [coinDroplets, setCoinDroplets] = useState<{ id: string; amount: number; x: number }[]>([]);
   const [callNotice, setCallNotice] = useState<string | null>(null);
-
-  const activeConvId = conversationId || friend.conversation_id || friend.id || 'default_conv';
 
   // Group Details & Deletion states (creator-only deletion enforcement)
   const [isGroupInfoOpen, setIsGroupInfoOpen] = useState(false);
@@ -261,10 +314,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
   // Step 1: Establish E2EE ECDH Shared Key (for 1-on-1 chats) & Fetch Messages
   useEffect(() => {
     let isSubscribed = true;
-    setIsLoadingMessages(true);
+    let channel: any = null;
+    const supabase = isSupabaseConfigured() ? getSupabase() : null;
 
     const initChat = async () => {
-      let derivedKey: CryptoKey | null = null;
+      let derivedKey: CryptoKey | null = conversationKeyRef.current;
 
       // 1-on-1 Chat: negotiate pairwise ECDH AES-256-GCM key
       if (!friend.is_group) {
@@ -275,6 +329,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           if (recipientPubKey) {
             derivedKey = await deriveConversationKey(privateKey, recipientPubKey, activeConvId);
+            conversationKeyRef.current = derivedKey;
             if (isSubscribed) {
               setConversationKey(derivedKey);
               setIsE2EEActive(true);
@@ -310,7 +365,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
           derivedKey
         );
         if (isSubscribed) {
-          setMessages(loadedMessages);
+          setMessages((prev) => {
+            const merged = mergeAndDeduplicateMessages(prev, loadedMessages);
+            saveCachedMessages(activeConvId, merged);
+            return merged;
+          });
           setIsLoadingMessages(false);
         }
       } catch (err) {
@@ -324,121 +383,129 @@ export const ChatView: React.FC<ChatViewProps> = ({
     initChat();
 
     // Step 2: Setup Supabase Realtime Listener for Instant Incoming Messages
-    if (isSupabaseConfigured()) {
-      const supabase = getSupabase();
-      if (supabase) {
-        const channelName =
-          activeConvId && !activeConvId.startsWith('conv_')
-            ? `chat_${activeConvId}`
-            : `chat_pair_${[profile.id, friend.id].sort().join('_')}`;
+    if (supabase) {
+      const channelName =
+        activeConvId && !activeConvId.startsWith('conv_')
+          ? `chat_${activeConvId}`
+          : `chat_pair_${[profile.id, friend.id].sort().join('_')}`;
 
-        let channel: any = null;
-        try {
-          channel = supabase
-            .channel(channelName)
-            .on(
-              'postgres_changes',
-              {
-                event: 'INSERT',
-                schema: 'public',
-                table: 'messages',
-              },
-              async (payload) => {
-                const newMsg = payload.new as any;
-                if (!newMsg) return;
+      try {
+        channel = supabase
+          .channel(channelName)
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'messages',
+            },
+            async (payload) => {
+              const newMsg = payload.new as any;
+              if (!newMsg) return;
 
-                const isRelevant = friend.is_group
-                  ? newMsg.conversation_id === activeConvId
-                  : (newMsg.conversation_id && newMsg.conversation_id === activeConvId) ||
-                    (newMsg.sender_id === friend.id && newMsg.receiver_id === profile.id) ||
-                    (newMsg.sender_id === profile.id && newMsg.receiver_id === friend.id);
+              const isRelevant = friend.is_group
+                ? newMsg.conversation_id === activeConvId
+                : (newMsg.conversation_id && newMsg.conversation_id === activeConvId) ||
+                  (newMsg.sender_id === friend.id && newMsg.receiver_id === profile.id) ||
+                  (newMsg.sender_id === profile.id && newMsg.receiver_id === friend.id);
 
-                if (isRelevant) {
-                  if (newMsg.sender_id !== profile.id) playReceiveSound();
-                  let displayContent = newMsg.content || '';
-                  let isE2EE = false;
-                  let decryptionError = false;
+              if (isRelevant) {
+                if (newMsg.sender_id !== profile.id) playReceiveSound();
+                let displayContent = newMsg.content || '';
+                let isE2EE = false;
+                let decryptionError = false;
 
-                  // Decrypt incoming message if encrypted
-                  if (newMsg.ciphertext && newMsg.iv) {
-                    if (conversationKey) {
-                      const decrypted = await decryptE2EEMessage(
-                        newMsg.ciphertext,
-                        newMsg.iv,
-                        conversationKey
-                      );
-                      if (decrypted !== null) {
-                        displayContent = decrypted;
-                        isE2EE = true;
-                      } else {
-                        displayContent = '🔒 Unable to decrypt this message';
-                        decryptionError = true;
-                      }
+                // Decrypt incoming message if encrypted using active key ref
+                const currentKey = conversationKeyRef.current;
+                if (newMsg.ciphertext && newMsg.iv) {
+                  if (currentKey) {
+                    const decrypted = await decryptE2EEMessage(
+                      newMsg.ciphertext,
+                      newMsg.iv,
+                      currentKey
+                    );
+                    if (decrypted !== null) {
+                      displayContent = decrypted;
+                      isE2EE = true;
                     } else {
-                      displayContent = '🔒 Encrypted message (key unavailable)';
+                      displayContent = '🔒 Unable to decrypt this message';
                       decryptionError = true;
                     }
+                  } else {
+                    displayContent = '🔒 Encrypted message (key unavailable)';
+                    decryptionError = true;
                   }
-
-                  // If sender details not included in realtime payload, resolve from friend members
-                  let senderName = '';
-                  let senderAvatar = '';
-                  if (friend.is_group && friend.members) {
-                    const found = friend.members.find((m) => m.id === newMsg.sender_id);
-                    if (found) {
-                      senderName = found.display_name || found.username;
-                      senderAvatar = found.avatar_url;
-                    }
-                  }
-
-                  const processedMsg: ChatMessage = {
-                    id: newMsg.id,
-                    conversation_id: newMsg.conversation_id,
-                    sender_id: newMsg.sender_id,
-                    sender_display_name: senderName,
-                    sender_avatar_url: senderAvatar,
-                    receiver_id: newMsg.receiver_id,
-                    content: displayContent,
-                    media_url: newMsg.media_url,
-                    ciphertext: newMsg.ciphertext,
-                    iv: newMsg.iv,
-                    encryption_version: newMsg.encryption_version,
-                    is_e2ee: isE2EE,
-                    decryption_error: decryptionError,
-                    coins_earned: newMsg.coins_earned || 2,
-                    created_at: newMsg.created_at,
-                    status: 'delivered',
-                  };
-
-                  setMessages((prev) => {
-                    if (prev.some((m) => m.id === processedMsg.id)) {
-                      return prev;
-                    }
-                    return [...prev, processedMsg];
-                  });
                 }
-              }
-            )
-            .subscribe();
-        } catch (err) {
-          console.warn('Chat realtime channel notice:', err);
-        }
 
-        return () => {
-          isSubscribed = false;
-          if (channel) {
-            try {
-              supabase.removeChannel(channel);
-            } catch {}
-          }
-        };
+                // If sender details not included in realtime payload, resolve from friend members
+                let senderName = '';
+                let senderAvatar = '';
+                if (friend.is_group && friend.members) {
+                  const found = friend.members.find((m) => m.id === newMsg.sender_id);
+                  if (found) {
+                    senderName = found.display_name || found.username;
+                    senderAvatar = found.avatar_url;
+                  }
+                }
+
+                const processedMsg: ChatMessage = {
+                  id: newMsg.id,
+                  conversation_id: newMsg.conversation_id,
+                  sender_id: newMsg.sender_id,
+                  sender_display_name: senderName,
+                  sender_avatar_url: senderAvatar,
+                  receiver_id: newMsg.receiver_id,
+                  content: displayContent,
+                  media_url: newMsg.media_url,
+                  ciphertext: newMsg.ciphertext,
+                  iv: newMsg.iv,
+                  encryption_version: newMsg.encryption_version,
+                  is_e2ee: isE2EE,
+                  decryption_error: decryptionError,
+                  coins_earned: newMsg.coins_earned || 2,
+                  created_at: newMsg.created_at,
+                  status: 'delivered',
+                };
+
+                setMessages((prev) => {
+                  const existingIndex = prev.findIndex((m) => isSameOrDuplicateMessage(m, processedMsg));
+                  let next: ChatMessage[];
+                  if (existingIndex >= 0) {
+                    next = [...prev];
+                    next[existingIndex] = {
+                      ...next[existingIndex],
+                      ...processedMsg,
+                      content: processedMsg.content && !processedMsg.decryption_error ? processedMsg.content : next[existingIndex].content,
+                      status: 'delivered',
+                    };
+                  } else {
+                    next = [...prev, processedMsg];
+                  }
+                  next.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+                  saveCachedMessages(activeConvId, next);
+                  return next;
+                });
+              }
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        console.warn('Chat realtime channel notice:', err);
       }
     }
 
     return () => {
       isSubscribed = false;
+      if (channel && supabase) {
+        try {
+          channel.unsubscribe();
+          supabase.removeChannel(channel);
+        } catch (e) {
+          console.warn('Chat channel cleanup notice:', e);
+        }
+      }
     };
-  }, [activeConvId, friend.id, friend.is_group, profile.id, conversationKey]);
+  }, [activeConvId, friend.id, friend.is_group, profile.id]);
 
   // Auto-scroll on new message
   useEffect(() => {
@@ -540,16 +607,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
             verifiedSenderId,
             friend.is_group ? '' : friend.id,
             trimmed,
-            friend.is_group ? null : conversationKey,
+            friend.is_group ? null : (conversationKeyRef.current || conversationKey),
             uploadedMediaPath
           );
           playSendSound();
 
           appendCachedMessage(activeConvId, savedMessage);
           setMessages((prev) => {
-            const next = prev.some((m) => m.id === savedMessage.id)
-              ? prev
-              : [...prev, savedMessage];
+            const existingIdx = prev.findIndex((m) => isSameOrDuplicateMessage(m, savedMessage));
+            let next: ChatMessage[];
+            if (existingIdx >= 0) {
+              next = [...prev];
+              next[existingIdx] = { ...next[existingIdx], ...savedMessage, status: 'delivered' };
+            } else {
+              next = [...prev, savedMessage];
+            }
+            next.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
             saveCachedMessages(activeConvId, next);
             return next;
           });
@@ -630,9 +703,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           appendCachedMessage(activeConvId, savedMessage);
           setMessages((prev) => {
-            const next = prev.some((m) => m.id === savedMessage.id)
-              ? prev
-              : [...prev, savedMessage];
+            const existingIdx = prev.findIndex((m) => isSameOrDuplicateMessage(m, savedMessage));
+            let next: ChatMessage[];
+            if (existingIdx >= 0) {
+              next = [...prev];
+              next[existingIdx] = { ...next[existingIdx], ...savedMessage, status: 'delivered' };
+            } else {
+              next = [...prev, savedMessage];
+            }
+            next.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
             saveCachedMessages(activeConvId, next);
             return next;
           });
@@ -960,7 +1039,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Messages Stream */}
       <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3 max-w-4xl w-full mx-auto flex flex-col">
-        {isLoadingMessages ? (
+        {isLoadingMessages && messages.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center py-16 text-slate-400 text-xs gap-2">
             <Loader2 className="w-5 h-5 animate-spin text-[#ff3b69]" />
             <span>Establishing secure conversation...</span>
