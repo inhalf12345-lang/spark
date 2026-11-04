@@ -64,101 +64,52 @@ function getStorageKey(conversationId: string, dateKey: string): string {
   return `${GROUP_TODO_STORAGE_PREFIX}${conversationId}_${dateKey}`;
 }
 
-/**
- * Generates starter member to-do lists for the test group so multi-person progress is immediately visible.
- */
-function seedStarterGroupTodos(
-  conversationId: string,
-  dateKey: string,
-  members?: PublicUserProfile[]
-): MemberDailyTodoList[] {
-  if (!conversationId.includes('test') && (!members || members.length === 0)) {
-    return [];
+export const DUMMY_TODO_TASK_TEXTS = new Set([
+  'Morning 5km run & hydration',
+  'Finish UI sprint review deck',
+  'Push API integration PR',
+  'Read 20 pages before bed',
+  'Finalize brand illustrations',
+  'Client feedback call at 2 PM',
+  'Organize design system tokens',
+  'Fix database migration script',
+  'Gym session (Upper body)',
+  'Review group pull requests',
+  'Complete priority work tasks',
+  '30 mins workout / walk',
+]);
+
+export function isDummyTodoList(list: MemberDailyTodoList): boolean {
+  if (!list || !list.user_id) return true;
+  const uid = list.user_id.toLowerCase();
+  if (
+    uid.startsWith('test_user_') ||
+    uid.startsWith('testuser_') ||
+    uid === 'test_user_arjun' ||
+    uid === 'test_user_neha' ||
+    uid === 'test_user_rohan'
+  ) {
+    return true;
   }
-
-  const nowIso = new Date().toISOString();
-  const defaultMembers: PublicUserProfile[] =
-    members && members.length > 0
-      ? members
-      : [
-          {
-            id: 'test_user_arjun',
-            username: 'arjun_v',
-            display_name: 'Arjun Verma',
-            avatar_url: 'https://api.dicebear.com/7.x/bottts/svg?seed=Arjun&backgroundColor=f1f5f9',
-          },
-          {
-            id: 'test_user_neha',
-            username: 'neha_spark',
-            display_name: 'Neha Kapoor',
-            avatar_url: 'https://api.dicebear.com/7.x/bottts/svg?seed=Neha&backgroundColor=f1f5f9',
-          },
-          {
-            id: 'test_user_rohan',
-            username: 'rohan_k',
-            display_name: 'Rohan Khanna',
-            avatar_url: 'https://api.dicebear.com/7.x/bottts/svg?seed=Rohan&backgroundColor=f1f5f9',
-          },
-        ];
-
-  const sampleTaskSets: { tasks: { text: string; completed: boolean }[]; status: 'in_progress' | 'submitted' }[] = [
-    {
-      status: 'in_progress',
-      tasks: [
-        { text: 'Morning 5km run & hydration', completed: true },
-        { text: 'Finish UI sprint review deck', completed: true },
-        { text: 'Push API integration PR', completed: false },
-        { text: 'Read 20 pages before bed', completed: false },
-      ],
-    },
-    {
-      status: 'submitted',
-      tasks: [
-        { text: 'Finalize brand illustrations', completed: true },
-        { text: 'Client feedback call at 2 PM', completed: true },
-        { text: 'Organize design system tokens', completed: true },
-      ],
-    },
-    {
-      status: 'in_progress',
-      tasks: [
-        { text: 'Fix database migration script', completed: true },
-        { text: 'Gym session (Upper body)', completed: false },
-        { text: 'Review group pull requests', completed: false },
-      ],
-    },
-  ];
-
-  return defaultMembers.slice(0, 3).map((m, idx) => {
-    const template = sampleTaskSets[idx % sampleTaskSets.length];
-    return {
-      id: `todo_${conversationId}_${m.id}_${dateKey}`,
-      conversation_id: conversationId,
-      user_id: m.id,
-      username: m.username,
-      display_name: m.display_name || m.username,
-      avatar_url: m.avatar_url,
-      date_key: dateKey,
-      tasks: template.tasks.map((t, i) => ({
-        id: `task_${m.id}_${i}`,
-        text: t.text,
-        completed: t.completed,
-        completed_at: t.completed ? nowIso : undefined,
-      })),
-      status: template.status,
-      submitted_at: template.status === 'submitted' ? nowIso : undefined,
-      updated_at: nowIso,
-    };
-  });
+  // Remove entries that exclusively match the dummy demo task templates
+  if (
+    list.tasks &&
+    list.tasks.length > 0 &&
+    list.tasks.every((t) => DUMMY_TODO_TASK_TEXTS.has(t.text)) &&
+    (list.id.includes('test_user') || list.conversation_id.includes('test'))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**
  * Loads all members' daily to-do lists for a group conversation on a given date.
- * Automatically auto-submits any unsubmitted past lists if the deadline has passed.
+ * Preserves all real user-created tasks and history, returning an empty list if no user has shared one yet.
  */
 export function getGroupDailyTodos(
   conversationId: string,
-  members?: PublicUserProfile[],
+  _members?: PublicUserProfile[],
   dateKey: string = getTodayDateKey()
 ): MemberDailyTodoList[] {
   const safeConvId = conversationId || 'default_group';
@@ -168,17 +119,18 @@ export function getGroupDailyTodos(
     const raw = localStorage.getItem(key) || localStorage.getItem(latestKey);
     if (raw) {
       const parsed: MemberDailyTodoList[] = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+      if (Array.isArray(parsed)) {
+        // Filter out dummy/sample entries only, preserving real user tasks
+        const realLists = parsed.filter((list) => !isDummyTodoList(list));
+        if (realLists.length !== parsed.length) {
+          saveGroupDailyTodos(safeConvId, realLists, dateKey);
+        }
+        return realLists;
       }
     }
   } catch {}
 
-  const seeded = seedStarterGroupTodos(safeConvId, dateKey, members);
-  if (seeded.length > 0) {
-    saveGroupDailyTodos(safeConvId, seeded, dateKey);
-  }
-  return seeded;
+  return [];
 }
 
 export function saveGroupDailyTodos(

@@ -26,6 +26,7 @@ import {
   autoSubmitPendingGroupTodos,
   formatTodoSummaryMessage,
   getTimeUntilDeadline,
+  DUMMY_TODO_TASK_TEXTS,
 } from '../lib/groupTodoService';
 import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
 import { TodoBoard } from './TodoBoard';
@@ -68,14 +69,11 @@ export const GroupTodoSection: React.FC<GroupTodoSectionProps> = ({
       setDraftTasks(myExisting.tasks);
       saveDraftTodoTasks(conversationId, profile.id, myExisting.tasks);
     } else if (savedDraft && savedDraft.length > 0) {
-      setDraftTasks(savedDraft);
+      const cleanDraft = savedDraft.filter((t) => !DUMMY_TODO_TASK_TEXTS.has(t.text));
+      setDraftTasks(cleanDraft);
+      saveDraftTodoTasks(conversationId, profile.id, cleanDraft);
     } else {
-      const starter = [
-        { id: `t_${Date.now()}_1`, text: 'Complete priority work tasks', completed: false },
-        { id: `t_${Date.now()}_2`, text: '30 mins workout / walk', completed: false },
-      ];
-      setDraftTasks(starter);
-      saveDraftTodoTasks(conversationId, profile.id, starter);
+      setDraftTasks([]);
     }
 
     if (isSupabaseConfigured()) {
@@ -323,38 +321,42 @@ export const GroupTodoSection: React.FC<GroupTodoSectionProps> = ({
 
               {/* Mini member progress bars */}
               <div className="flex items-center gap-2.5 overflow-x-auto scrollbar-none pt-1">
-                {todoLists.map((item) => {
-                  const done = item.tasks.filter((t) => t.completed).length;
-                  const total = item.tasks.length;
-                  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                {todoLists.length === 0 ? (
+                  <span className="text-[10px] text-slate-400 italic">No tasks shared yet today</span>
+                ) : (
+                  todoLists.map((item) => {
+                    const done = item.tasks.filter((t) => t.completed).length;
+                    const total = item.tasks.length;
+                    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
 
-                  return (
-                    <div
-                      key={item.user_id}
-                      className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-200/70 rounded-full pl-1 pr-2 py-0.5"
-                    >
-                      <img
-                        src={item.avatar_url}
-                        alt={item.username}
-                        className="w-4 h-4 rounded-full object-cover bg-white"
-                      />
-                      <span className="text-[10px] font-semibold text-slate-700 max-w-[64px] truncate">
-                        {item.user_id === profile.id ? 'You' : item.display_name.split(' ')[0]}
-                      </span>
-                      <span
-                        className={`text-[10px] font-mono-numbers font-bold ${
-                          pct === 100
-                            ? 'text-emerald-600'
-                            : item.status === 'auto_submitted'
-                            ? 'text-amber-600'
-                            : 'text-[#ff3b69]'
-                        }`}
+                    return (
+                      <div
+                        key={item.user_id}
+                        className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-200/70 rounded-full pl-1 pr-2 py-0.5"
                       >
-                        {done}/{total}
-                      </span>
-                    </div>
-                  );
-                })}
+                        <img
+                          src={item.avatar_url}
+                          alt={item.username}
+                          className="w-4 h-4 rounded-full object-cover bg-white"
+                        />
+                        <span className="text-[10px] font-semibold text-slate-700 max-w-[64px] truncate">
+                          {item.user_id === profile.id ? 'You' : item.display_name.split(' ')[0]}
+                        </span>
+                        <span
+                          className={`text-[10px] font-mono-numbers font-bold ${
+                            pct === 100
+                              ? 'text-emerald-600'
+                              : item.status === 'auto_submitted'
+                              ? 'text-amber-600'
+                              : 'text-[#ff3b69]'
+                          }`}
+                        >
+                          {done}/{total}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>

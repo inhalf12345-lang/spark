@@ -217,21 +217,26 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({
 
       {/* 3. Individual Member Daily To-Do Lists & Real-Time Progress Bars */}
       <div className="space-y-3">
-        {todoLists.map((memberTodo) => {
-          const isMe = memberTodo.user_id === currentUserId;
-          const doneCount = memberTodo.tasks.filter((t) => t.completed).length;
-          const totalCount = memberTodo.tasks.length;
-          const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+        {todoLists.length === 0 ? (
+          <div className="py-8 px-4 text-center rounded-2xl bg-slate-50/80 border border-slate-200/70 text-slate-400 text-xs">
+            No member to-do lists shared today yet. Be the first to share your tasks!
+          </div>
+        ) : (
+          todoLists.map((memberTodo) => {
+            const isMe = memberTodo.user_id === currentUserId;
+            const doneCount = memberTodo.tasks.filter((t) => t.completed).length;
+            const totalCount = memberTodo.tasks.length;
+            const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
-          return (
-            <div
-              key={memberTodo.id}
-              className={`p-4 rounded-2xl border space-y-3 transition-all ${
-                isMe
-                  ? 'bg-rose-50/30 border-rose-200/80 shadow-2xs'
-                  : 'bg-slate-50/80 border-slate-200/70'
-              }`}
-            >
+            return (
+              <div
+                key={memberTodo.id}
+                className={`p-4 rounded-2xl border space-y-3 transition-all ${
+                  isMe
+                    ? 'bg-rose-50/30 border-rose-200/80 shadow-2xs'
+                    : 'bg-slate-50/80 border-slate-200/70'
+                }`}
+              >
               {/* Member Header & Submission Tracker Status */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5 min-w-0">
@@ -359,7 +364,8 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({
               )}
             </div>
           );
-        })}
+        })
+      )}
       </div>
     </div>
   );
