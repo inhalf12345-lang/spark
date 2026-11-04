@@ -483,7 +483,16 @@ export async function syncProfileToSupabaseDirectory(
     }
     lastError = upsertErr;
 
-    console.error('[Supabase Directory] All profile sync attempts failed:', lastError);
+    const isNetworkError =
+      typeof lastError?.message === 'string' &&
+      (lastError.message.includes('Failed to fetch') ||
+        lastError.message.includes('NetworkError') ||
+        lastError.message.includes('Load failed'));
+
+    if (!isNetworkError) {
+      console.warn('[Supabase Directory] Profile sync notice:', lastError);
+    }
+
     return {
       success: false,
       error: lastError?.message || 'Database write rejected by Supabase.',

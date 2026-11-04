@@ -194,26 +194,37 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
   };
 
   const handleSendTestPush = async () => {
-    const firstConv = conversations[0];
-    const ok = await triggerLocalServiceWorkerTestNotification(
-      firstConv?.id,
-      Boolean(firstConv?.is_group),
-      firstConv
+    setIsLoading(true);
+    setStatusMessage(null);
+    try {
+      const firstConv = Array.isArray(conversations) ? conversations[0] : undefined;
+      const targetTitle = firstConv
         ? firstConv.is_group
           ? firstConv.name || 'Group Chat'
-          : firstConv.other_user.display_name || firstConv.other_user.username
-        : 'Rohan'
-    );
-    if (ok) {
-      setStatusMessage({
-        type: 'success',
-        text: 'Test notification sent via Service Worker! Tap it to test navigation.',
-      });
-    } else {
+          : firstConv.other_user?.display_name || firstConv.other_user?.username || 'Spark'
+        : 'Spark';
+
+      const ok = await triggerLocalServiceWorkerTestNotification(
+        firstConv?.id,
+        Boolean(firstConv?.is_group),
+        targetTitle
+      );
+
+      if (ok) {
+        setStatusMessage({
+          type: 'success',
+          text: 'Test notification displayed successfully.',
+        });
+      } else {
+        throw new Error('Could not display test notification. Please ensure notifications are enabled and Service Worker is active.');
+      }
+    } catch (err: any) {
       setStatusMessage({
         type: 'error',
-        text: 'Please enable notifications first before testing.',
+        text: err instanceof Error ? err.message : String(err || 'Failed to send test notification.'),
       });
+    } finally {
+      setIsLoading(false);
     }
   };
 
