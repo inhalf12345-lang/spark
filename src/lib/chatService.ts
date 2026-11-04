@@ -901,17 +901,12 @@ export async function fetchUserRealConversations(
       conversationsMap.set(conv.id, conv);
     };
 
-    // 1. Always fetch conversations directly from `messages` table (100% immune to conversation_members RLS issues)
-    const directMessageConvs = await fetchConversationsFromMessagesDirect(currentUserId);
-    for (const dConv of directMessageConvs) {
-      addOrMergeConversation(dConv);
-    }
-
-    // 2. Also query `conversation_members` for group chats and newly created conversations
+    // Query conversation_members where current user's membership has not been soft-deleted
     const { data: myMemberships, error: memberError } = await supabase
       .from('conversation_members')
       .select('conversation_id')
-      .eq('user_id', currentUserId);
+      .eq('user_id', currentUserId)
+      .is('deleted_at', null);
 
     if (!memberError && myMemberships && myMemberships.length > 0) {
       const conversationIds = myMemberships
@@ -922,7 +917,8 @@ export async function fetchUserRealConversations(
         const { data: convRecords } = await supabase
           .from('conversations')
           .select('id, is_group, name, avatar_url, created_by, created_at, updated_at')
-          .in('id', conversationIds);
+          .in('id', conversationIds)
+          .is('deleted_at', null);
 
         const convMap = new Map<string, any>();
         (convRecords || []).forEach((c: any) => convMap.set(c.id, c));
@@ -945,6 +941,7 @@ export async function fetchUserRealConversations(
 
           for (const convId of conversationIds) {
             const convMeta = convMap.get(convId);
+            if (!convMeta) continue;
             const members = convMembersMap.get(convId) || [];
             const isGroup = Boolean(convMeta?.is_group);
 
@@ -1323,16 +1320,9 @@ export async function deleteRealConversation(
     try {
       await ensureSupabaseAuthSession();
 
-      // Delete messages in this conversation
-      await supabase.from('messages').delete().eq('conversation_id', conversationId);
-
-      // Delete conversation membership
-      await supabase.from('conversation_members').delete().eq('conversation_id', conversationId);
-
-      // Delete conversation row
-      await supabase.from('conversations').delete().eq('id', conversationId);
+      await supabase.rpc('soft_leave_conversation', { p_conversation_id: conversationId });
     } catch (e) {
-      console.warn('Supabase delete conversation note:', e);
+      console.warn('Supabase soft leave conversation note:', e);
     }
   }
 
@@ -1405,28 +1395,10 @@ export async function deleteRealGroupConversation(
         throw new Error('Permission denied: Only the person who created this group can delete it.');
       }
 
-      // Delete child data first to respect foreign keys
-      try {
-        await supabase.from('messages').delete().eq('conversation_id', conversationId);
-      } catch (e) {
-        console.warn('Delete group messages note:', e);
-      }
-
-      try {
-        await supabase.from('conversation_members').delete().eq('conversation_id', conversationId);
-      } catch (e) {
-        console.warn('Delete group members note:', e);
-      }
-
-      // Delete conversation row
-      const { error: delError } = await supabase
+      await supabase
         .from('conversations')
-        .delete()
+        .update({ deleted_at: new Date().toISOString() })
         .eq('id', conversationId);
-
-      if (delError && !delError.message.includes('foreign key')) {
-        console.warn('Delete conversation row note:', delError.message);
-      }
     }
   }
 
