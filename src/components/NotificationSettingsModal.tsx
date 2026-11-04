@@ -13,10 +13,6 @@ import {
   Download,
   Loader2,
   Info,
-  KeyRound,
-  Copy,
-  Check,
-  RefreshCw,
 } from 'lucide-react';
 import { RealConversation, UserProfile } from '../types';
 import {
@@ -30,9 +26,7 @@ import {
   fetchUserPushSubscriptions,
   toggleConversationMute,
   triggerLocalServiceWorkerTestNotification,
-  getActiveVapidPublicKey,
-  setCustomVapidPublicKey,
-  generateLocalVapidKeyPairInBrowser,
+  isDevicePushExplicitlyDisabled,
   NotificationPreferences,
   PushSubscriptionRecord,
 } from '../lib/pushService';
@@ -72,37 +66,6 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
 
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
-  const [showVapidGenerator, setShowVapidGenerator] = useState(true);
-  const [generatedKeys, setGeneratedKeys] = useState<{
-    publicKey: string;
-    privateKey: string;
-  } | null>(null);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-
-  const handleGenerateFreshVapidKeys = async () => {
-    try {
-      const pair = await generateLocalVapidKeyPairInBrowser();
-      setGeneratedKeys(pair);
-      setCustomVapidPublicKey(pair.publicKey);
-      setStatusMessage({
-        type: 'success',
-        text: 'Generated a fresh VAPID keypair locally in your browser (never sent to chat or GitHub). Copy the secrets to Supabase below.',
-      });
-    } catch (err: any) {
-      setStatusMessage({
-        type: 'error',
-        text: err?.message || 'Failed to generate VAPID keys in browser.',
-      });
-    }
-  };
-
-  const handleCopyText = async (value: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedField(label);
-      setTimeout(() => setCopiedField(null), 2000);
-    } catch {}
-  };
 
   const refreshState = async () => {
     const currentPerm = getBrowserNotificationPermission();
@@ -124,23 +87,15 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
     if (isOpen) {
       setStatusMessage(null);
       refreshState();
-      if (!generatedKeys) {
-        generateLocalVapidKeyPairInBrowser()
-          .then((pair) => {
-            setGeneratedKeys(pair);
-            if (!getActiveVapidPublicKey()) {
-              setCustomVapidPublicKey(pair.publicKey);
-            }
-          })
-          .catch(() => {});
-      }
     }
   }, [isOpen, profile.id]);
 
   if (!isOpen) return null;
 
   const isPushActiveOnThisDevice =
-    permission === 'granted' && hasDeviceSub && prefs.push_enabled;
+    permission === 'granted' &&
+    hasDeviceSub &&
+    !isDevicePushExplicitlyDisabled(profile.id);
 
   const handleEnableNotifications = async () => {
     setIsLoading(true);
@@ -304,15 +259,36 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
                 </p>
               </div>
 
-              <span className="text-[11px] font-mono text-slate-500 shrink-0">
-                {permission === 'granted'
-                  ? 'Granted'
-                  : permission === 'denied'
-                  ? 'Blocked'
-                  : permission === 'default'
-                  ? 'Prompt'
-                  : 'Unsupported'}
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[11px] font-mono text-slate-500">
+                  {isPushActiveOnThisDevice ? 'ON' : 'OFF'}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isPushActiveOnThisDevice}
+                  disabled={isLoading || !isWebPushSupported()}
+                  onClick={
+                    isPushActiveOnThisDevice
+                      ? handleDisableNotifications
+                      : handleEnableNotifications
+                  }
+                  className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer disabled:opacity-50 ${
+                    isPushActiveOnThisDevice ? 'bg-[#ff3b69]' : 'bg-slate-300'
+                  }`}
+                  title={
+                    isPushActiveOnThisDevice
+                      ? 'Turn OFF notifications on this device'
+                      : 'Turn ON notifications on this device'
+                  }
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-xs transition-transform ${
+                      isPushActiveOnThisDevice ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
 
             {/* Instructions when permission is blocked */}
@@ -537,101 +513,6 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
               In Safari on iPhone/iPad: Tap the <strong>Share</strong> icon in the toolbar, then tap <strong>Add to Home Screen</strong>.
             </div>
           )}
-
-          {/* 6. Local Browser VAPID Keypair Generator (Zero Chat / Zero GitHub Exposure) */}
-          <div className="pt-2 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={() => setShowVapidGenerator((prev) => !prev)}
-              className="w-full flex items-center justify-between text-[11px] font-semibold text-slate-500 hover:text-slate-800 py-1.5 transition-colors cursor-pointer"
-            >
-              <span className="flex items-center gap-1.5">
-                <KeyRound className="w-3.5 h-3.5 text-[#ff3b69]" />
-                <span>Rotate / Generate Unexposed VAPID Keypair Locally</span>
-              </span>
-              <span>{showVapidGenerator ? 'Hide' : 'Open'}</span>
-            </button>
-
-            {showVapidGenerator && (
-              <div className="mt-2 p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-3 text-[11px]">
-                <p className="text-slate-600 leading-relaxed">
-                  Generate a brand-new P-256 VAPID keypair <strong>100% locally in your browser</strong> using Web Crypto. Because it runs only on your screen, the private key is never seen in AI chat logs or GitHub.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleGenerateFreshVapidKeys}
-                  className="w-full py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Generate New Keypair on This Device</span>
-                </button>
-
-                {generatedKeys && (
-                  <div className="space-y-2.5 pt-1">
-                    <div className="p-2.5 rounded-xl bg-white border border-slate-200 space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-800">
-                          1. VAPID_PUBLIC_KEY ( &amp; VITE_VAPID_PUBLIC_KEY )
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleCopyText(generatedKeys.publicKey, 'pub')}
-                          className="text-[#ff3b69] font-bold flex items-center gap-1 cursor-pointer"
-                        >
-                          {copiedField === 'pub' ? (
-                            <>
-                              <Check className="w-3 h-3" />
-                              <span>Copied</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3 h-3" />
-                              <span>Copy</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <p className="font-mono text-[10px] text-slate-600 break-all select-all">
-                        {generatedKeys.publicKey}
-                      </p>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-amber-50/70 border border-amber-200 space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-amber-900">
-                          2. VAPID_PRIVATE_KEY (Supabase Edge Function Secret ONLY)
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleCopyText(generatedKeys.privateKey, 'priv')}
-                          className="text-amber-900 font-bold flex items-center gap-1 cursor-pointer"
-                        >
-                          {copiedField === 'priv' ? (
-                            <>
-                              <Check className="w-3 h-3" />
-                              <span>Copied Secret</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3 h-3" />
-                              <span>Copy Secret</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <p className="text-[10px] text-amber-800">
-                        Paste into <strong>Supabase Dashboard → Edge Functions → Secrets</strong> as <code className="font-mono">VAPID_PRIVATE_KEY</code>. Never commit to GitHub.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="text-[10px] text-slate-400 font-mono break-all">
-                  Active Public Key: {getActiveVapidPublicKey().slice(0, 22)}...
-                </div>
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </div>

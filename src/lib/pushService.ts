@@ -10,6 +10,44 @@ export const DEFAULT_VAPID_PUBLIC_KEY =
 
 const PUSH_PREFS_STORAGE_PREFIX = 'spark_push_prefs_v1_';
 const CUSTOM_VAPID_PUB_KEY_STORAGE = 'spark_custom_vapid_public_key';
+const DEVICE_PUSH_DISABLED_PREFIX = 'spark_device_push_disabled_v1_';
+const FIRST_USE_PUSH_PROMPT_PREFIX = 'spark_push_first_use_prompt_v1_';
+
+export function isDevicePushExplicitlyDisabled(userId: string): boolean {
+  if (!userId) return false;
+  try {
+    return localStorage.getItem(`${DEVICE_PUSH_DISABLED_PREFIX}${userId}`) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function setDevicePushExplicitlyDisabled(userId: string, disabled: boolean): void {
+  if (!userId) return;
+  try {
+    if (disabled) {
+      localStorage.setItem(`${DEVICE_PUSH_DISABLED_PREFIX}${userId}`, 'true');
+    } else {
+      localStorage.removeItem(`${DEVICE_PUSH_DISABLED_PREFIX}${userId}`);
+    }
+  } catch {}
+}
+
+export function hasSeenFirstUsePushPrompt(userId: string): boolean {
+  if (!userId) return true;
+  try {
+    return localStorage.getItem(`${FIRST_USE_PUSH_PROMPT_PREFIX}${userId}`) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function markFirstUsePushPromptSeen(userId: string): void {
+  if (!userId) return;
+  try {
+    localStorage.setItem(`${FIRST_USE_PUSH_PROMPT_PREFIX}${userId}`, 'true');
+  } catch {}
+}
 
 export interface NotificationPreferences {
   user_id: string;
@@ -231,8 +269,13 @@ export async function subscribeUserToWebPush(userId: string): Promise<{
   }
 
   try {
-    // 1. Request browser notification permission explicitly on user gesture
-    const permission = await Notification.requestPermission();
+    // 1. Check or request browser notification permission (never bypasses Chrome's native prompt)
+    const permission =
+      Notification.permission === 'granted'
+        ? 'granted'
+        : await Notification.requestPermission();
+    markFirstUsePushPromptSeen(userId);
+
     if (permission !== 'granted') {
       return {
         success: false,
@@ -309,10 +352,18 @@ export async function subscribeUserToWebPush(userId: string): Promise<{
       };
     }
 
-    // 4. Sync subscription to Supabase `push_subscriptions` table (supports multiple devices per user)
-    await syncSubscriptionToSupabase(record);
+    // 4. Sync subscription to Supabase `push_subscriptions` table and verify registration succeeded
+    const syncResult = await syncSubscriptionToSupabase(record);
+    if (!syncResult.ok) {
+      return {
+        success: false,
+        permission,
+        error: syncResult.error || 'Failed to register push subscription with Supabase.',
+      };
+    }
 
-    // 5. Mark push_enabled = true in preferences
+    // 5. Mark this device as enabled and ensure account-level push_enabled = true in Supabase
+    setDevicePushExplicitlyDisabled(userId, false);
     const prefs = getLocalNotificationPreferences(userId);
     await saveNotificationPreferences(userId, { ...prefs, push_enabled: true });
 
@@ -334,32 +385,28 @@ export async function subscribeUserToWebPush(userId: string): Promise<{
 }
 
 /**
- * Silently refreshes/syncs the current device's subscription to Supabase if the user has ALREADY granted permission
- * and enabled notifications (never triggers a permission prompt).
+ * Automatically enables and registers push notifications for this device if browser permission
+ * is already 'granted' and the user has not explicitly turned notifications OFF on this device.
+ * Never triggers a permission prompt if permission is not already granted.
  */
 export async function syncExistingPushSubscriptionIfGranted(userId: string): Promise<void> {
   if (!userId || !isWebPushSupported()) return;
   if (Notification.permission !== 'granted') return;
-
-  const prefs = getLocalNotificationPreferences(userId);
-  if (!prefs.push_enabled) return;
+  if (isDevicePushExplicitlyDisabled(userId)) return;
 
   try {
-    const sub = await getCurrentDevicePushSubscription();
-    if (sub) {
-      const record = serializePushSubscription(sub, userId);
-      if (record) {
-        await syncSubscriptionToSupabase(record);
-      }
-    }
+    await subscribeUserToWebPush(userId);
   } catch {}
 }
 
 /**
- * Unsubscribes the current browser/device from Web Push and removes its endpoint from Supabase.
+ * Unsubscribes ONLY the current browser/device from Web Push and removes its endpoint from Supabase.
+ * Does NOT disable push notifications on the user's other registered devices.
  */
 export async function unsubscribeUserFromWebPush(userId: string): Promise<boolean> {
   try {
+    setDevicePushExplicitlyDisabled(userId, true);
+
     const sub = await getCurrentDevicePushSubscription();
     const endpoint = sub?.endpoint;
 
@@ -380,8 +427,14 @@ export async function unsubscribeUserFromWebPush(userId: string): Promise<boolea
       }
     }
 
+    // Keep push_enabled = true in Supabase if the user still has other active devices registered
+    const remainingSubs = await fetchUserPushSubscriptions(userId);
+    const hasOtherActiveDevices = remainingSubs.some((s) => s.endpoint !== endpoint);
     const prefs = getLocalNotificationPreferences(userId);
-    await saveNotificationPreferences(userId, { ...prefs, push_enabled: false });
+    await saveNotificationPreferences(userId, {
+      ...prefs,
+      push_enabled: hasOtherActiveDevices ? true : false,
+    });
 
     window.dispatchEvent(new CustomEvent('spark_push_status_changed'));
     return true;
@@ -394,10 +447,16 @@ export async function unsubscribeUserFromWebPush(userId: string): Promise<boolea
 /**
  * Upserts a device push subscription into Supabase `push_subscriptions`.
  */
-async function syncSubscriptionToSupabase(record: PushSubscriptionRecord): Promise<void> {
-  if (!isSupabaseConfigured()) return;
+async function syncSubscriptionToSupabase(
+  record: PushSubscriptionRecord
+): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseConfigured()) {
+    return { ok: true };
+  }
   const supabase = getSupabase();
-  if (!supabase) return;
+  if (!supabase) {
+    return { ok: false, error: 'Supabase client is not initialized.' };
+  }
 
   try {
     const { error } = await supabase.from('push_subscriptions').upsert(
@@ -413,9 +472,12 @@ async function syncSubscriptionToSupabase(record: PushSubscriptionRecord): Promi
     );
     if (error) {
       console.warn('Supabase push_subscriptions upsert notice:', error.message);
+      return { ok: false, error: error.message };
     }
-  } catch (e) {
+    return { ok: true };
+  } catch (e: any) {
     console.warn('Failed to sync push subscription to Supabase:', e);
+    return { ok: false, error: e?.message || 'Network error while saving subscription.' };
   }
 }
 

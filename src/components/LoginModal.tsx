@@ -10,9 +10,20 @@ import {
   SlidersHorizontal,
   Lock,
   Bell,
+  BellOff,
+  Loader2,
+  AlertTriangle,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { syncProfileToSupabaseDirectory } from '../lib/chatService';
+import {
+  isWebPushSupported,
+  getBrowserNotificationPermission,
+  getCurrentDevicePushSubscription,
+  isDevicePushExplicitlyDisabled,
+  subscribeUserToWebPush,
+  unsubscribeUserFromWebPush,
+} from '../lib/pushService';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -46,14 +57,53 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [displayName, setDisplayName] = useState(profile.display_name || profile.username);
   const [bio, setBio] = useState(profile.bio || '');
   const [selectedAvatarSeed, setSelectedAvatarSeed] = useState(profile.avatar_url);
+  const [pushPerm, setPushPerm] = useState<NotificationPermission | 'unsupported'>(() =>
+    getBrowserNotificationPermission()
+  );
+  const [isDevicePushOn, setIsDevicePushOn] = useState(false);
+  const [isTogglingPush, setIsTogglingPush] = useState(false);
+  const [pushNotice, setPushNotice] = useState<string | null>(null);
+
+  const syncDevicePushState = async () => {
+    const perm = getBrowserNotificationPermission();
+    setPushPerm(perm);
+    const sub = await getCurrentDevicePushSubscription();
+    const disabled = isDevicePushExplicitlyDisabled(profile.id);
+    setIsDevicePushOn(perm === 'granted' && Boolean(sub) && !disabled);
+  };
 
   useEffect(() => {
     if (isOpen) {
       setDisplayName(profile.display_name || profile.username || '');
       setBio(profile.bio || '');
       setSelectedAvatarSeed(profile.avatar_url);
+      setPushNotice(null);
+      syncDevicePushState();
     }
   }, [isOpen, profile.id, profile.display_name, profile.username, profile.bio, profile.avatar_url]);
+
+  const handleToggleDevicePush = async () => {
+    if (isTogglingPush) return;
+    setIsTogglingPush(true);
+    setPushNotice(null);
+    try {
+      if (isDevicePushOn) {
+        await unsubscribeUserFromWebPush(profile.id);
+        await syncDevicePushState();
+        setPushNotice('Notifications turned OFF on this device.');
+      } else {
+        const res = await subscribeUserToWebPush(profile.id);
+        await syncDevicePushState();
+        if (res.success) {
+          setPushNotice('Notifications turned ON for this device.');
+        } else {
+          setPushNotice(res.error || 'Could not enable notifications.');
+        }
+      }
+    } finally {
+      setIsTogglingPush(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -130,25 +180,82 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </span>
           </div>
 
-          {/* Background Push Notifications */}
-          {onOpenNotifications && (
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onOpenNotifications();
-              }}
-              className="w-full p-2.5 rounded-2xl bg-rose-50/60 hover:bg-rose-50 border border-rose-200/80 flex items-center justify-between text-xs text-slate-800 transition-colors cursor-pointer"
-            >
-              <div className="flex items-center gap-2">
-                <Bell className="w-3.5 h-3.5 text-[#ff3b69] shrink-0" />
-                <span className="font-semibold text-[11px]">Push Notifications</span>
+          {/* Background Push Notifications (Simple ON/OFF Toggle + Settings Link) */}
+          <div className="p-3 rounded-2xl bg-rose-50/50 border border-rose-200/80 space-y-2 text-xs text-slate-800">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                {isDevicePushOn ? (
+                  <Bell className="w-4 h-4 text-[#ff3b69] shrink-0" />
+                ) : (
+                  <BellOff className="w-4 h-4 text-slate-400 shrink-0" />
+                )}
+                <div>
+                  <p className="font-bold text-[11px] text-slate-900">
+                    Push Notifications (This Device)
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    {isDevicePushOn
+                      ? 'ON · Receiving background alerts'
+                      : pushPerm === 'denied'
+                      ? 'OFF · Blocked in Chrome settings'
+                      : 'OFF · Paused on this device'}
+                  </p>
+                </div>
               </div>
-              <span className="text-[10px] text-[#ff3b69] font-semibold">
-                Enable · Mute · Devices →
-              </span>
-            </button>
-          )}
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={isDevicePushOn}
+                disabled={isTogglingPush || !isWebPushSupported()}
+                onClick={handleToggleDevicePush}
+                className={`relative w-12 h-6 rounded-full transition-colors shrink-0 cursor-pointer disabled:opacity-50 ${
+                  isDevicePushOn ? 'bg-[#ff3b69]' : 'bg-slate-300'
+                }`}
+                title={isDevicePushOn ? 'Turn OFF notifications on this device' : 'Turn ON notifications on this device'}
+              >
+                {isTogglingPush ? (
+                  <Loader2 className="w-3.5 h-3.5 text-white animate-spin mx-auto" />
+                ) : (
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-xs transition-transform ${
+                      isDevicePushOn ? 'translate-x-6' : 'translate-x-0'
+                    }`}
+                  />
+                )}
+              </button>
+            </div>
+
+            {pushPerm === 'denied' && (
+              <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-[10px] text-amber-900 space-y-0.5">
+                <p className="font-bold flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                  <span>How to enable in Chrome settings:</span>
+                </p>
+                <p className="text-amber-800 leading-relaxed">
+                  Tap the lock/tune icon in your Chrome address bar → <strong>Permissions</strong> → <strong>Notifications</strong> → select <strong>Allow</strong>, then switch ON above.
+                </p>
+              </div>
+            )}
+
+            {pushNotice && (
+              <p className="text-[10px] font-medium text-slate-600">{pushNotice}</p>
+            )}
+
+            {onOpenNotifications && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenNotifications();
+                }}
+                className="w-full pt-1.5 border-t border-rose-200/60 flex items-center justify-between text-[10px] font-semibold text-[#ff3b69] hover:underline cursor-pointer"
+              >
+                <span>Muted chats, group alerts &amp; test alert</span>
+                <span>Open →</span>
+              </button>
+            )}
+          </div>
 
           {/* Manage Data Precision */}
           {onOpenDataPrecision && (

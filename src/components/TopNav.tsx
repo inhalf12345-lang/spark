@@ -5,7 +5,7 @@ import { formatNumericPrecision, getPrecisionSettings, DataPrecisionSettings } f
 import {
   getBrowserNotificationPermission,
   getCurrentDevicePushSubscription,
-  getLocalNotificationPreferences,
+  isDevicePushExplicitlyDisabled,
 } from '../lib/pushService';
 
 interface TopNavProps {
@@ -40,8 +40,8 @@ export const TopNav: React.FC<TopNavProps> = ({
     const checkPushStatus = async () => {
       const perm = getBrowserNotificationPermission();
       const sub = await getCurrentDevicePushSubscription();
-      const prefs = getLocalNotificationPreferences(profile.id);
-      setIsPushActive(perm === 'granted' && Boolean(sub) && prefs.push_enabled);
+      const deviceDisabled = isDevicePushExplicitlyDisabled(profile.id);
+      setIsPushActive(perm === 'granted' && Boolean(sub) && !deviceDisabled);
     };
     checkPushStatus();
     window.addEventListener('spark_push_status_changed', checkPushStatus);

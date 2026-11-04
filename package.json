@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
+    "prebuild": "rm -f ./manifest.json ./pwa-192x192.png ./pwa-512x512.png ./pwa-maskable-512x512.png ./apple-touch-icon.png ./icon.svg",
     "build": "NODE_ENV=production vite build",
+    "postbuild": "cp dist/assets/app.js public/gh-pages-bundle/app.js && cp dist/assets/app.css public/gh-pages-bundle/app.css && cp public/manifest.json ./manifest.json && cp public/sw.js ./sw.js && cp public/icon.svg ./icon.svg && cp public/pwa-192x192.png ./pwa-192x192.png && cp public/pwa-512x512.png ./pwa-512x512.png && cp public/pwa-maskable-512x512.png ./pwa-maskable-512x512.png && cp public/apple-touch-icon.png ./apple-touch-icon.png && rm -rf ./dist",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

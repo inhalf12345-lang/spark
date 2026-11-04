@@ -23,7 +23,16 @@ export default defineConfig(({ command }) => {
         output: {
           entryFileNames: 'assets/app.js',
           chunkFileNames: 'assets/[name].js',
-          assetFileNames: 'assets/app.[ext]',
+          assetFileNames: (assetInfo) => {
+            if (
+              assetInfo.name?.endsWith('.css') ||
+              (Array.isArray((assetInfo as any).names) &&
+                (assetInfo as any).names.some((n: string) => n.endsWith('.css')))
+            ) {
+              return 'assets/app.[ext]';
+            }
+            return 'assets/[name].[ext]';
+          },
         },
       },
     },

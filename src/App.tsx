@@ -64,6 +64,11 @@ import { NotificationSettingsModal } from './components/NotificationSettingsModa
 import {
   registerSparkServiceWorker,
   syncExistingPushSubscriptionIfGranted,
+  isWebPushSupported,
+  getBrowserNotificationPermission,
+  hasSeenFirstUsePushPrompt,
+  markFirstUsePushPromptSeen,
+  subscribeUserToWebPush,
 } from './lib/pushService';
 
 export default function App() {
@@ -100,6 +105,8 @@ export default function App() {
   const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
   const [isDataPrecisionModalOpen, setIsDataPrecisionModalOpen] = useState(false);
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
+  const [showFirstUsePushBanner, setShowFirstUsePushBanner] = useState(false);
+  const [isEnablingFirstUsePush, setIsEnablingFirstUsePush] = useState(false);
   const [viewingStory, setViewingStory] = useState<UserStory | null>(null);
   const [pendingDeepLinkConvId, setPendingDeepLinkConvId] = useState<string | null>(() => {
     try {
@@ -369,11 +376,41 @@ export default function App() {
     registerSparkServiceWorker().catch(() => {});
   }, []);
 
-  // Sync existing Web Push subscription to Supabase when user is authenticated and already granted permission
+  // Automatically enable/sync push subscription when permission is granted, or show first-use prompt if permission is 'default'
   useEffect(() => {
-    if (!isAuthenticated || !profile.id) return;
-    syncExistingPushSubscriptionIfGranted(profile.id).catch(() => {});
+    if (!isAuthenticated || !profile.id || !isWebPushSupported()) return;
+    const perm = getBrowserNotificationPermission();
+    if (perm === 'granted') {
+      setShowFirstUsePushBanner(false);
+      syncExistingPushSubscriptionIfGranted(profile.id).catch(() => {});
+    } else if (perm === 'default' && !hasSeenFirstUsePushPrompt(profile.id)) {
+      setShowFirstUsePushBanner(true);
+    } else {
+      setShowFirstUsePushBanner(false);
+    }
   }, [isAuthenticated, profile.id]);
+
+  const handleAcceptFirstUsePush = async () => {
+    if (!profile.id || isEnablingFirstUsePush) return;
+    setIsEnablingFirstUsePush(true);
+    try {
+      markFirstUsePushPromptSeen(profile.id);
+      const result = await subscribeUserToWebPush(profile.id);
+      setShowFirstUsePushBanner(false);
+      if (!result.success && result.permission === 'denied') {
+        setIsNotificationModalOpen(true);
+      }
+    } finally {
+      setIsEnablingFirstUsePush(false);
+    }
+  };
+
+  const handleDismissFirstUsePush = () => {
+    if (profile.id) {
+      markFirstUsePushPromptSeen(profile.id);
+    }
+    setShowFirstUsePushBanner(false);
+  };
 
   // Listen for Service Worker postMessage when user taps a push notification while Spark tab is already open
   useEffect(() => {
@@ -986,6 +1023,38 @@ export default function App() {
           onSignOut={handleSignOut}
           animatingCoins={animatingCoins}
         />
+
+        {showFirstUsePushBanner && (
+          <div className="w-full bg-rose-50/90 border-b border-rose-200/80 px-4 py-2.5">
+            <div className="max-w-4xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+              <div className="space-y-0.5">
+                <p className="font-bold text-slate-900">
+                  Stay notified when you switch apps
+                </p>
+                <p className="text-[11px] text-slate-600">
+                  Allow browser notifications to receive instant message and group alerts even when Spark is running in the background.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleAcceptFirstUsePush}
+                  disabled={isEnablingFirstUsePush}
+                  className="px-3.5 py-1.5 rounded-full bg-[#ff3b69] hover:opacity-95 text-white font-bold text-xs transition-opacity disabled:opacity-50 cursor-pointer"
+                >
+                  {isEnablingFirstUsePush ? 'Enabling...' : 'Enable Notifications'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDismissFirstUsePush}
+                  className="px-3 py-1.5 rounded-full bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Not Now
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Home Messenger View with Real Conversations & Search */}
         <main className="flex-1 w-full flex flex-col overflow-y-auto">
