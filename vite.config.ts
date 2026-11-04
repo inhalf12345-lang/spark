@@ -10,6 +10,7 @@ export default defineConfig(({ command }) => {
     define: {
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify('https://zyyaeuiprnrezuuqdmyt.supabase.co'),
       'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify('sb_publishable_FQzPhZZQolCGuGpGSO_HcA__P41b0DG'),
+      'import.meta.env.VITE_VAPID_PUBLIC_KEY': JSON.stringify(process.env.VITE_VAPID_PUBLIC_KEY || ''),
     },
     resolve: {
       alias: {

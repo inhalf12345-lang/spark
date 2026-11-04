@@ -1,7 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Flame, Coins, LogOut, SlidersHorizontal } from 'lucide-react';
+import { Flame, Coins, LogOut, SlidersHorizontal, Bell, BellOff } from 'lucide-react';
 import { UserProfile } from '../types';
 import { formatNumericPrecision, getPrecisionSettings, DataPrecisionSettings } from '../lib/precisionService';
+import {
+  getBrowserNotificationPermission,
+  getCurrentDevicePushSubscription,
+  getLocalNotificationPreferences,
+} from '../lib/pushService';
 
 interface TopNavProps {
   profile: UserProfile;
@@ -11,6 +16,7 @@ interface TopNavProps {
   onOpenShop: () => void;
   onOpenLeaderboard: () => void;
   onOpenDataPrecision?: () => void;
+  onOpenNotifications?: () => void;
   onSignOut?: () => void;
   animatingCoins?: boolean;
 }
@@ -23,10 +29,24 @@ export const TopNav: React.FC<TopNavProps> = ({
   onOpenShop,
   onOpenLeaderboard,
   onOpenDataPrecision,
+  onOpenNotifications,
   onSignOut,
   animatingCoins = false,
 }) => {
   const [precisionSettings, setPrecisionSettings] = useState<DataPrecisionSettings>(getPrecisionSettings());
+  const [isPushActive, setIsPushActive] = useState<boolean>(false);
+
+  useEffect(() => {
+    const checkPushStatus = async () => {
+      const perm = getBrowserNotificationPermission();
+      const sub = await getCurrentDevicePushSubscription();
+      const prefs = getLocalNotificationPreferences(profile.id);
+      setIsPushActive(perm === 'granted' && Boolean(sub) && prefs.push_enabled);
+    };
+    checkPushStatus();
+    window.addEventListener('spark_push_status_changed', checkPushStatus);
+    return () => window.removeEventListener('spark_push_status_changed', checkPushStatus);
+  }, [profile.id]);
 
   useEffect(() => {
     const handlePrecisionChange = (e: any) => {
@@ -76,6 +96,29 @@ export const TopNav: React.FC<TopNavProps> = ({
             <Coins className="w-3.5 h-3.5 text-amber-500" />
             <span className="font-mono-numbers">{formatNumericPrecision(profile.coins, precisionSettings)}</span>
           </button>
+
+          {/* Notification Settings Bell */}
+          {onOpenNotifications && (
+            <button
+              onClick={onOpenNotifications}
+              className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-95 shadow-2xs ${
+                isPushActive
+                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-600'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900'
+              }`}
+              title={
+                isPushActive
+                  ? 'Background Push Notifications Active — Tap to Manage'
+                  : 'Enable Background Push Notifications'
+              }
+            >
+              {isPushActive ? (
+                <Bell className="w-3.5 h-3.5" />
+              ) : (
+                <BellOff className="w-3.5 h-3.5" />
+              )}
+            </button>
+          )}
 
           {/* Data Precision Settings */}
           {onOpenDataPrecision && (

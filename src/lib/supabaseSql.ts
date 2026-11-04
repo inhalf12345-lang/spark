@@ -566,5 +566,86 @@ CREATE POLICY "Group members can view media" ON storage.objects
     bucket_id IN ('chat-media', 'storage')
     AND auth.uid() IS NOT NULL
   );
+
+-- 11. Web Push Subscriptions & Notification Preferences (Background Push Notifications)
+ALTER TABLE public.conversation_members
+  ADD COLUMN IF NOT EXISTS is_muted BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT DEFAULT 'web',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON public.push_subscriptions (user_id);
+
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage their own push subscriptions" ON public.push_subscriptions;
+CREATE POLICY "Users can manage their own push subscriptions"
+  ON public.push_subscriptions FOR ALL
+  TO authenticated, anon
+  USING (true)
+  WITH CHECK (true);
+
+CREATE TABLE IF NOT EXISTS public.notification_preferences (
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE PRIMARY KEY,
+  push_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  dm_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  group_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  muted_conversations TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.notification_preferences ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage their own notification preferences" ON public.notification_preferences;
+CREATE POLICY "Users can manage their own notification preferences"
+  ON public.notification_preferences FOR ALL
+  TO authenticated, anon
+  USING (true)
+  WITH CHECK (true);
+
+-- 12. Optional pg_net Database Webhook Trigger on public.messages INSERT
+-- Automatically invokes the 'send-push-notification' Supabase Edge Function whenever a new message is saved.
+CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
+
+CREATE OR REPLACE FUNCTION public.trigger_send_push_notification()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  edge_function_url TEXT := 'https://zyyaeuiprnrezuuqdmyt.supabase.co/functions/v1/send-push-notification';
+BEGIN
+  IF NEW.deleted_at IS NULL THEN
+    PERFORM net.http_post(
+      url := edge_function_url,
+      headers := '{"Content-Type": "application/json"}'::jsonb,
+      body := jsonb_build_object(
+        'type', 'INSERT',
+        'table', 'messages',
+        'schema', 'public',
+        'record', row_to_json(NEW)::jsonb
+      )
+    );
+  END IF;
+  RETURN NEW;
+EXCEPTION
+  WHEN OTHERS THEN
+    -- Never block message saving if pg_net or webhook dispatch encounters an error
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_message_inserted_send_push ON public.messages;
+CREATE TRIGGER on_message_inserted_send_push
+  AFTER INSERT ON public.messages
+  FOR EACH ROW
+  EXECUTE FUNCTION public.trigger_send_push_notification();
 `;
+
 

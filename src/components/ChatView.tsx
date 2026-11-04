@@ -22,6 +22,8 @@ import {
   Info,
   Check,
   ShieldAlert,
+  Bell,
+  BellOff,
 } from 'lucide-react';
 import { ChatMessage, UserProfile, PublicUserProfile } from '../types';
 import {
@@ -54,6 +56,7 @@ import {
 import { GroupPhotoButtonAndModal } from './GroupPhotoModal';
 import { GroupTodoSection } from './GroupTodoBoard';
 import { playSendSound, playReceiveSound } from '../lib/sounds';
+import { isConversationMuted, toggleConversationMute } from '../lib/pushService';
 
 interface ChatTargetUser {
   id: string;
@@ -257,6 +260,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
     window.addEventListener('spark_precision_changed', handlePrecisionChange);
     return () => window.removeEventListener('spark_precision_changed', handlePrecisionChange);
   }, []);
+
+  // Per-conversation notification mute state
+  const [isChatMuted, setIsChatMuted] = useState<boolean>(() =>
+    isConversationMuted(profile.id, activeConvId)
+  );
+
+  useEffect(() => {
+    const syncMuteState = () => {
+      setIsChatMuted(isConversationMuted(profile.id, activeConvId));
+    };
+    syncMuteState();
+    window.addEventListener('spark_push_status_changed', syncMuteState);
+    return () => window.removeEventListener('spark_push_status_changed', syncMuteState);
+  }, [profile.id, activeConvId]);
+
+  const handleToggleChatMute = async () => {
+    const nextMuted = await toggleConversationMute(profile.id, activeConvId);
+    setIsChatMuted(nextMuted);
+    setCallNotice(
+      nextMuted
+        ? 'Notifications muted for this conversation'
+        : 'Notifications enabled for this conversation'
+    );
+    setTimeout(() => setCallNotice(null), 2200);
+  };
 
   useEffect(() => {
     if (friend.is_group) {
@@ -976,8 +1004,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           </div>
 
-          {/* Right: Call Actions + Delete Chat / Group Info */}
+          {/* Right: Call Actions + Mute + Delete Chat / Group Info */}
           <div className="flex items-center gap-1.5 text-[#ff3b69]">
+            <button
+              type="button"
+              onClick={handleToggleChatMute}
+              className={`w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90 ${
+                isChatMuted ? 'text-amber-500 bg-amber-50/70' : 'text-slate-400 hover:text-[#ff3b69]'
+              }`}
+              title={isChatMuted ? 'Unmute conversation notifications' : 'Mute conversation notifications'}
+            >
+              {isChatMuted ? <BellOff className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
+            </button>
             {friend.is_group ? (
               <button
                 onClick={() => setIsGroupInfoOpen(true)}

@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Lock,
+  Bell,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { syncProfileToSupabaseDirectory } from '../lib/chatService';
@@ -21,6 +22,7 @@ interface LoginModalProps {
   onSignOut?: () => void;
   onOpenSupabaseGuide?: () => void;
   onOpenDataPrecision?: () => void;
+  onOpenNotifications?: () => void;
 }
 
 const PRESET_AVATARS = [
@@ -39,6 +41,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onSaveProfile,
   onSignOut,
   onOpenDataPrecision,
+  onOpenNotifications,
 }) => {
   const [displayName, setDisplayName] = useState(profile.display_name || profile.username);
   const [bio, setBio] = useState(profile.bio || '');
@@ -126,6 +129,26 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               ECDH-P256 / AES-GCM
             </span>
           </div>
+
+          {/* Background Push Notifications */}
+          {onOpenNotifications && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenNotifications();
+              }}
+              className="w-full p-2.5 rounded-2xl bg-rose-50/60 hover:bg-rose-50 border border-rose-200/80 flex items-center justify-between text-xs text-slate-800 transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <Bell className="w-3.5 h-3.5 text-[#ff3b69] shrink-0" />
+                <span className="font-semibold text-[11px]">Push Notifications</span>
+              </div>
+              <span className="text-[10px] text-[#ff3b69] font-semibold">
+                Enable · Mute · Devices →
+              </span>
+            </button>
+          )}
 
           {/* Manage Data Precision */}
           {onOpenDataPrecision && (

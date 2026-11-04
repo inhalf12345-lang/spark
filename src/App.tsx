@@ -60,6 +60,11 @@ import {
   purgeCryptoSessionMemory,
 } from './lib/cryptoService';
 import { DataPrecisionModal } from './components/DataPrecisionModal';
+import { NotificationSettingsModal } from './components/NotificationSettingsModal';
+import {
+  registerSparkServiceWorker,
+  syncExistingPushSubscriptionIfGranted,
+} from './lib/pushService';
 
 export default function App() {
   // Session & Authentication state (synchronously restored so user stays signed in until explicit Sign Out)
@@ -94,7 +99,15 @@ export default function App() {
   const [isCreateStoryModalOpen, setIsCreateStoryModalOpen] = useState(false);
   const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
   const [isDataPrecisionModalOpen, setIsDataPrecisionModalOpen] = useState(false);
+  const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [viewingStory, setViewingStory] = useState<UserStory | null>(null);
+  const [pendingDeepLinkConvId, setPendingDeepLinkConvId] = useState<string | null>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('chat');
+    } catch {
+      return null;
+    }
+  });
 
   // Status & FX
   const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(isSupabaseConfigured());
@@ -350,6 +363,75 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // Passively register Service Worker on mount (never requests notification permission automatically)
+  useEffect(() => {
+    registerSparkServiceWorker().catch(() => {});
+  }, []);
+
+  // Sync existing Web Push subscription to Supabase when user is authenticated and already granted permission
+  useEffect(() => {
+    if (!isAuthenticated || !profile.id) return;
+    syncExistingPushSubscriptionIfGranted(profile.id).catch(() => {});
+  }, [isAuthenticated, profile.id]);
+
+  // Listen for Service Worker postMessage when user taps a push notification while Spark tab is already open
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'SPARK_OPEN_CONVERSATION') {
+        const targetId = event.data.conversationId;
+        if (targetId && typeof targetId === 'string') {
+          setPendingDeepLinkConvId(targetId);
+          if (profile.id) {
+            loadConversations(profile.id);
+          }
+        }
+      }
+    };
+
+    navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+    };
+  }, [profile.id, loadConversations]);
+
+  // Open target conversation when deep-linked from a push notification (?chat=<id> or SW postMessage)
+  useEffect(() => {
+    if (!pendingDeepLinkConvId || !isAuthenticated || conversations.length === 0) return;
+
+    const targetConv = conversations.find((c) => c.id === pendingDeepLinkConvId);
+    if (targetConv) {
+      setChatOriginCoords(null);
+      setActiveConversationId(targetConv.id);
+      setSelectedFriend({
+        ...targetConv.other_user,
+        is_group: targetConv.is_group,
+        display_name: targetConv.is_group
+          ? targetConv.name
+          : targetConv.other_user.display_name || targetConv.other_user.username,
+        avatar_url:
+          targetConv.is_group && targetConv.avatar_url
+            ? targetConv.avatar_url
+            : targetConv.other_user.avatar_url,
+        member_count: targetConv.member_count,
+        members: targetConv.members,
+        created_by: targetConv.created_by,
+        conversation_id: targetConv.id,
+      });
+      setPendingDeepLinkConvId(null);
+
+      // Clean ?chat= query param from URL without reloading the page
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('chat')) {
+          url.searchParams.delete('chat');
+          window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+        }
+      } catch {}
+    }
+  }, [pendingDeepLinkConvId, isAuthenticated, conversations]);
 
   // Realtime conversation updates: whenever a new message, group, or conversation arrives, refresh conversations list
   useEffect(() => {
@@ -900,6 +982,7 @@ export default function App() {
           onOpenShop={() => setIsShopModalOpen(true)}
           onOpenLeaderboard={() => setIsLeaderboardModalOpen(true)}
           onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
+          onOpenNotifications={() => setIsNotificationModalOpen(true)}
           onSignOut={handleSignOut}
           animatingCoins={animatingCoins}
         />
@@ -976,6 +1059,14 @@ export default function App() {
         onSaveProfile={handleSaveProfile}
         onSignOut={handleSignOut}
         onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
+        onOpenNotifications={() => setIsNotificationModalOpen(true)}
+      />
+
+      <NotificationSettingsModal
+        isOpen={isNotificationModalOpen}
+        onClose={() => setIsNotificationModalOpen(false)}
+        profile={profile}
+        conversations={conversations}
       />
 
       <DataPrecisionModal
