@@ -47,8 +47,8 @@ self.addEventListener('push', (event) => {
     payload.body ||
     (isGroup ? 'New message in your group.' : 'You received a new message.');
   const tag = payload.tag || (conversationId ? `spark-conv-${conversationId}` : 'spark-msg');
-  const icon = payload.icon || resolveScopeUrl('pwa-192x192.png');
-  const badge = payload.badge || resolveScopeUrl('pwa-192x192.png');
+  const icon = payload.icon || resolveScopeUrl('public/icon.svg');
+  const badge = payload.badge || resolveScopeUrl('public/icon.svg');
   const targetUrl = payload.url
     ? resolveScopeUrl(payload.url)
     : conversationId
