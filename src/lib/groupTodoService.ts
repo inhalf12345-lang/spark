@@ -79,6 +79,10 @@ export const DUMMY_TODO_TASK_TEXTS = new Set([
   '30 mins workout / walk',
 ]);
 
+const DUMMY_TODO_TASK_TEXTS_LOWER = new Set(
+  Array.from(DUMMY_TODO_TASK_TEXTS).map((t) => t.toLowerCase())
+);
+
 export function isDummyTodoList(list: MemberDailyTodoList): boolean {
   if (!list || !list.user_id) return true;
   const uid = list.user_id.toLowerCase();
@@ -91,16 +95,56 @@ export function isDummyTodoList(list: MemberDailyTodoList): boolean {
   ) {
     return true;
   }
-  // Remove entries that exclusively match the dummy demo task templates
-  if (
-    list.tasks &&
-    list.tasks.length > 0 &&
-    list.tasks.every((t) => DUMMY_TODO_TASK_TEXTS.has(t.text)) &&
-    (list.id.includes('test_user') || list.conversation_id.includes('test'))
-  ) {
+  // If list has no tasks, it's not a valid to-do list
+  if (!list.tasks || list.tasks.length === 0) {
+    return true;
+  }
+  // Any list where all tasks are trial/sample tasks (e.g. seeded trial tasks)
+  const isAllTrialTasks = list.tasks.every(
+    (t) => !t.text || DUMMY_TODO_TASK_TEXTS_LOWER.has(t.text.trim().toLowerCase())
+  );
+  if (isAllTrialTasks) {
+    return true;
+  }
+  // Also check if tasks have trial generator IDs and trial task text
+  const hasTrialTaskIds = list.tasks.some(
+    (t) =>
+      t.id.startsWith(`task_${list.user_id}_`) &&
+      DUMMY_TODO_TASK_TEXTS_LOWER.has((t.text || '').trim().toLowerCase())
+  );
+  if (hasTrialTaskIds) {
     return true;
   }
   return false;
+}
+
+/**
+ * Scans localStorage and purges any trial/sample to-do lists that were saved previously.
+ */
+function purgeStoredTrialTodos(): void {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const storageKey = localStorage.key(i);
+      if (
+        storageKey &&
+        storageKey.startsWith(GROUP_TODO_STORAGE_PREFIX) &&
+        !storageKey.includes('draft_')
+      ) {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              const cleaned = parsed.filter((l) => !isDummyTodoList(l));
+              if (cleaned.length !== parsed.length) {
+                localStorage.setItem(storageKey, JSON.stringify(cleaned));
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
 }
 
 /**
@@ -112,6 +156,8 @@ export function getGroupDailyTodos(
   _members?: PublicUserProfile[],
   dateKey: string = getTodayDateKey()
 ): MemberDailyTodoList[] {
+  purgeStoredTrialTodos();
+
   const safeConvId = conversationId || 'default_group';
   const key = getStorageKey(safeConvId, dateKey);
   const latestKey = `${GROUP_TODO_STORAGE_PREFIX}${safeConvId}_latest`;
