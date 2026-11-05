@@ -391,6 +391,8 @@ BEGIN
       USING (
         auth.uid() IS NOT NULL
         AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 17) = 'spark_call_inbox_'
+        AND realtime.topic() LIKE 'spark\\_call\\_inbox\\_%' ESCAPE '\\'
         AND realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
       );
 
@@ -973,6 +975,8 @@ BEGIN
       USING (
         auth.uid() IS NOT NULL
         AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 17) = 'spark_call_inbox_'
+        AND realtime.topic() LIKE 'spark\\_call\\_inbox\\_%' ESCAPE '\\'
         AND realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
       );
 

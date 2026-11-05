@@ -636,6 +636,72 @@ const INITIAL_CALL_STATE: VoiceCallState = {
 type CallStateListener = (state: VoiceCallState) => void;
 type RemoteStreamListener = (stream: MediaStream | null) => void;
 
+export const CALL_INBOX_TOPIC_PREFIX = 'spark_call_inbox_';
+export const CALL_ROOM_TOPIC_PREFIX = 'spark_call_1on1_';
+
+/**
+ * Generates the canonical private inbox Realtime topic for the authenticated user.
+ */
+export function buildOwnCallInboxTopic(authenticatedUserId: string): string {
+  const normalized = typeof authenticatedUserId === 'string' ? authenticatedUserId.trim() : '';
+  if (!normalized) {
+    throw new Error('Authenticated user ID is required to construct a private call inbox topic.');
+  }
+  return `${CALL_INBOX_TOPIC_PREFIX}${normalized}`;
+}
+
+/**
+ * Verifies whether `authenticatedUserId` is permitted to subscribe to (read from) `requestedTopic`.
+ * Enforces strict private inbox isolation: a user may ONLY subscribe to `spark_call_inbox_<their_auth_uid>`.
+ */
+export function canSubscribeToCallInboxTopic(
+  authenticatedUserId: string | null | undefined,
+  requestedTopic: string
+): boolean {
+  if (!authenticatedUserId || typeof authenticatedUserId !== 'string') {
+    return false;
+  }
+  const normalizedUid = authenticatedUserId.trim();
+  if (!normalizedUid) {
+    return false;
+  }
+  if (typeof requestedTopic !== 'string' || !requestedTopic.startsWith(CALL_INBOX_TOPIC_PREFIX)) {
+    return false;
+  }
+  return requestedTopic === `${CALL_INBOX_TOPIC_PREFIX}${normalizedUid}`;
+}
+
+export interface CallRealtimeTransportOverride {
+  getVerifiedSessionUser: () => Promise<{ userId: string; accessToken: string } | null>;
+  authorizeOneToOneConversation?: (
+    conversationId: string,
+    localUserId: string,
+    expectedPeerId?: string
+  ) => Promise<{
+    authorized: boolean;
+    verifiedConversationId?: string;
+    verifiedLocalUserId?: string;
+    verifiedPeerProfile?: PublicUserProfile;
+    cryptoBundle?: CallCryptoSessionBundle;
+    reason?: string;
+  }>;
+  subscribeChannel?: (params: {
+    topic: string;
+    userId: string;
+    accessToken: string;
+    isPrivate: boolean;
+    onSignal: (msg: VoiceCallSignalMessage) => void;
+  }) => Promise<RealtimeChannel | null>;
+  publishBroadcastWithoutSubscribe?: (params: {
+    topic: string;
+    userId: string;
+    accessToken: string;
+    isPrivate: boolean;
+    event: string;
+    payload: VoiceCallSignalMessage;
+  }) => Promise<boolean>;
+}
+
 export class OneToOneVoiceCallManager {
   private state: VoiceCallState = { ...INITIAL_CALL_STATE };
   private stateListeners = new Set<CallStateListener>();
@@ -643,7 +709,9 @@ export class OneToOneVoiceCallManager {
 
   private verifiedUserId: string | null = null;
   private inboxChannel: RealtimeChannel | null = null;
+  private inboxInitPromise: Promise<void> | null = null;
   private callRoomChannel: RealtimeChannel | null = null;
+  private testTransportOverride: CallRealtimeTransportOverride | null = null;
 
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
@@ -669,6 +737,10 @@ export class OneToOneVoiceCallManager {
       window.addEventListener('beforeunload', cleanupOnUnload);
       window.addEventListener('pagehide', cleanupOnUnload);
     }
+  }
+
+  public setTestRealtimeTransportOverride(override: CallRealtimeTransportOverride | null): void {
+    this.testTransportOverride = override;
   }
 
   public getState(): VoiceCallState {
@@ -725,6 +797,17 @@ export class OneToOneVoiceCallManager {
     userId: string;
     accessToken: string;
   } | null> {
+    if (this.testTransportOverride) {
+      const session = await this.testTransportOverride.getVerifiedSessionUser();
+      if (!session || !session.userId?.trim() || !session.accessToken?.trim()) {
+        return null;
+      }
+      return {
+        userId: session.userId.trim(),
+        accessToken: session.accessToken.trim(),
+      };
+    }
+
     if (!isSupabaseConfigured()) return null;
     const supabase = getSupabase();
     if (!supabase) return null;
@@ -760,6 +843,45 @@ export class OneToOneVoiceCallManager {
   }
 
   /**
+   * Evicts a specific channel instance (or any stale channel matching `topic`) from the
+   * Supabase Realtime client so `supabase.channel(topic)` never returns an errored/closed singleton.
+   */
+  private async evictChannelInstance(channel: RealtimeChannel | null): Promise<void> {
+    if (!channel) return;
+    const supabase = getSupabase();
+    try {
+      await supabase?.removeChannel(channel);
+    } catch {}
+    try {
+      (channel as any).teardown?.();
+    } catch {}
+    try {
+      (supabase?.realtime as any)?._remove?.(channel);
+    } catch {}
+  }
+
+  private async evictStaleChannelsByTopic(
+    topic: string,
+    preserveChannel?: RealtimeChannel | null
+  ): Promise<void> {
+    const supabase = getSupabase();
+    if (!supabase) return;
+    try {
+      const realtimeTopic = `realtime:${topic}`;
+      const existing = supabase
+        .getChannels()
+        .filter(
+          (ch) =>
+            (ch.topic === realtimeTopic || ch.topic === topic) &&
+            (!preserveChannel || ch !== preserveChannel)
+        );
+      for (const ch of existing) {
+        await this.evictChannelInstance(ch);
+      }
+    } catch {}
+  }
+
+  /**
    * Server-side conversation membership, identity, and pinned dual-key cryptographic verification.
    * Never trusts senderId, targetUserId, or conversation membership supplied by the client,
    * and NEVER silently trusts a changed peer signing key.
@@ -779,11 +901,6 @@ export class OneToOneVoiceCallManager {
       return { authorized: false, reason: 'Missing conversation identifier.' };
     }
 
-    const supabase = getSupabase();
-    if (!supabase) {
-      return { authorized: false, reason: 'Supabase is not configured.' };
-    }
-
     const verifiedSession = await this.getVerifiedSessionUser();
     if (!verifiedSession) {
       return {
@@ -793,6 +910,19 @@ export class OneToOneVoiceCallManager {
     }
 
     const localUserId = verifiedSession.userId;
+
+    if (this.testTransportOverride?.authorizeOneToOneConversation) {
+      return this.testTransportOverride.authorizeOneToOneConversation(
+        conversationId,
+        localUserId,
+        expectedPeerId
+      );
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      return { authorized: false, reason: 'Supabase is not configured.' };
+    }
 
     try {
       // 1. Verify conversation row on the server (must exist, be 1-to-1, and not be deleted)
@@ -950,19 +1080,53 @@ export class OneToOneVoiceCallManager {
 
   /**
    * Subscribes to a strictly private Supabase Realtime channel (`private: true` ONLY).
-   * Completely removes any fallback to public or non-private channels and fails closed on authorization failure.
+   * Enforces that a user can NEVER subscribe to another user's private inbox (`spark_call_inbox_<other>`),
+   * evicts any stale channel instance before joining, and fails closed on authorization failure.
    */
   public async subscribePrivateChannel(
     topic: string,
     onSignal: (msg: VoiceCallSignalMessage) => void
   ): Promise<RealtimeChannel | null> {
+    if (!topic || typeof topic !== 'string') return null;
+
+    const verifiedSession = await this.getVerifiedSessionUser();
+    if (!verifiedSession || !verifiedSession.userId || !verifiedSession.accessToken) {
+      return null;
+    }
+
+    // Hard client-side guard: NEVER allow subscribing to another user's private call inbox
+    if (topic.startsWith(CALL_INBOX_TOPIC_PREFIX)) {
+      if (!canSubscribeToCallInboxTopic(verifiedSession.userId, topic)) {
+        console.warn(
+          `[VoiceCall] Blocked cross-user inbox subscription attempt by ${verifiedSession.userId} for topic ${topic}.`
+        );
+        return null;
+      }
+    } else if (topic.startsWith(CALL_ROOM_TOPIC_PREFIX)) {
+      const roomConvId = topic.slice(CALL_ROOM_TOPIC_PREFIX.length).trim();
+      if (!roomConvId) {
+        return null;
+      }
+    } else {
+      return null;
+    }
+
+    if (this.testTransportOverride?.subscribeChannel) {
+      return this.testTransportOverride.subscribeChannel({
+        topic,
+        userId: verifiedSession.userId,
+        accessToken: verifiedSession.accessToken,
+        isPrivate: true,
+        onSignal,
+      });
+    }
+
     const supabase = getSupabase();
     if (!supabase) return null;
 
-    const verifiedSession = await this.getVerifiedSessionUser();
-    if (!verifiedSession) {
-      return null;
-    }
+    // Evict any stale/errored channel with the same topic so supabase.channel() creates a clean instance
+    await this.evictStaleChannelsByTopic(topic);
+    await supabase.realtime.setAuth(verifiedSession.accessToken);
 
     return new Promise((resolve) => {
       let settled = false;
@@ -973,13 +1137,14 @@ export class OneToOneVoiceCallManager {
         },
       });
 
+      try {
+        ch.updateJoinPayload({ access_token: verifiedSession.accessToken });
+      } catch {}
+
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
-          try {
-            ch.unsubscribe();
-            supabase.removeChannel(ch);
-          } catch {}
+          void this.evictChannelInstance(ch);
           resolve(null);
         }
       }, 5000);
@@ -1022,10 +1187,7 @@ export class OneToOneVoiceCallManager {
               err.message
             );
           }
-          try {
-            ch.unsubscribe();
-            supabase.removeChannel(ch);
-          } catch {}
+          void this.evictChannelInstance(ch);
           resolve(null);
         }
       });
@@ -1034,61 +1196,82 @@ export class OneToOneVoiceCallManager {
 
   /**
    * Initializes the signed-in user's private incoming call inbox listener (`spark_call_inbox_<auth.uid()>`).
-   * Only subscribes to the server-authenticated user's own inbox and fails closed if authorization fails.
+   * Serializes concurrent calls, only subscribes to the server-authenticated user's own inbox, and fails closed if authorization fails.
    */
   public async initIncomingCallListener(expectedUserId?: string): Promise<void> {
-    if (!isSupabaseConfigured()) return;
+    if (this.inboxInitPromise) {
+      await this.inboxInitPromise;
+    }
 
-    const verifiedSession = await this.getVerifiedSessionUser();
-    if (!verifiedSession) {
+    const runInit = async (): Promise<void> => {
+      if (!this.testTransportOverride && !isSupabaseConfigured()) return;
+
+      const verifiedSession = await this.getVerifiedSessionUser();
+      if (!verifiedSession) {
+        this.cleanupInboxChannel();
+        return;
+      }
+
+      if (expectedUserId && expectedUserId !== verifiedSession.userId) {
+        console.warn('[VoiceCall] Blocked inbox subscription for mismatched user ID.');
+        this.cleanupInboxChannel();
+        return;
+      }
+
+      if (this.verifiedUserId === verifiedSession.userId && this.inboxChannel) {
+        const currentChannelState = (this.inboxChannel as any).state;
+        if (
+          !currentChannelState ||
+          currentChannelState === 'joined' ||
+          currentChannelState === 'joining'
+        ) {
+          return;
+        }
+      }
+
       this.cleanupInboxChannel();
-      return;
-    }
+      this.verifiedUserId = verifiedSession.userId;
 
-    if (expectedUserId && expectedUserId !== verifiedSession.userId) {
-      console.warn('[VoiceCall] Blocked inbox subscription for mismatched user ID.');
-      this.cleanupInboxChannel();
-      return;
-    }
+      // Ensure local user's separated ECDH + ECDSA public key bundle is synced to user_crypto_keys
+      try {
+        const localKeys = await getOrCreateDeviceIdentityKeyPair(verifiedSession.userId);
+        await syncPublicKeyToSupabase(verifiedSession.userId, localKeys.publishedBundle);
+      } catch {}
 
-    if (this.verifiedUserId === verifiedSession.userId && this.inboxChannel) {
-      return;
-    }
+      const inboxTopic = buildOwnCallInboxTopic(verifiedSession.userId);
+      const privateInboxChannel = await this.subscribePrivateChannel(inboxTopic, (msg) => {
+        this.handleIncomingInboxSignal(msg).catch((e) =>
+          console.warn('[VoiceCall] Error handling inbox signal:', e)
+        );
+      });
 
-    this.cleanupInboxChannel();
-    this.verifiedUserId = verifiedSession.userId;
+      if (!privateInboxChannel) {
+        this.inboxChannel = null;
+        console.warn(
+          '[VoiceCall] Private call inbox subscription failed closed. Ensure Section 13 SQL (realtime.messages RLS) is applied in Supabase.'
+        );
+        return;
+      }
 
-    // Ensure local user's separated ECDH + ECDSA public key bundle is synced to user_crypto_keys
+      this.inboxChannel = privateInboxChannel;
+    };
+
+    const p = runInit();
+    this.inboxInitPromise = p;
     try {
-      const localKeys = await getOrCreateDeviceIdentityKeyPair(verifiedSession.userId);
-      await syncPublicKeyToSupabase(verifiedSession.userId, localKeys.publishedBundle);
-    } catch {}
-
-    const inboxTopic = `spark_call_inbox_${verifiedSession.userId}`;
-    const privateInboxChannel = await this.subscribePrivateChannel(inboxTopic, (msg) => {
-      this.handleIncomingInboxSignal(msg).catch((e) =>
-        console.warn('[VoiceCall] Error handling inbox signal:', e)
-      );
-    });
-
-    if (!privateInboxChannel) {
-      console.warn(
-        '[VoiceCall] Private call inbox subscription failed closed. Ensure Section 13 SQL (realtime.messages RLS) is applied in Supabase.'
-      );
-      return;
+      await p;
+    } finally {
+      if (this.inboxInitPromise === p) {
+        this.inboxInitPromise = null;
+      }
     }
-
-    this.inboxChannel = privateInboxChannel;
   }
 
   public cleanupInboxChannel(): void {
-    const supabase = getSupabase();
-    if (this.inboxChannel) {
-      try {
-        this.inboxChannel.unsubscribe();
-        supabase?.removeChannel(this.inboxChannel);
-      } catch {}
-      this.inboxChannel = null;
+    const ch = this.inboxChannel;
+    this.inboxChannel = null;
+    if (ch) {
+      void this.evictChannelInstance(ch);
     }
   }
 
@@ -1125,26 +1308,32 @@ export class OneToOneVoiceCallManager {
   }
 
   /**
-   * Publishes a write-only private call invitation to the verified peer's inbox (`spark_call_inbox_<serverVerifiedPeerId>`).
+   * Publishes a private call invitation to the verified peer's inbox (`spark_call_inbox_<serverVerifiedPeerId>`)
+   * WITHOUT subscribing (`phx_join` / `SELECT`) to the peer's inbox!
    *
-   * IMPORTANT: A `true` return value (`resp === 'ok'` from Supabase Realtime `ack: true`) ONLY confirms that
-   * the Supabase Realtime broker authorized and accepted the broadcast on the channel. It is NOT proof that
-   * the recipient device is online or received the invitation. Recipient delivery is only confirmed when
-   * a cryptographically signed `call-ringing` (or `call-accept`/`call-reject`/`call-busy`) signal is received
-   * back from the recipient on the private conversation room channel.
+   * Why this is critical:
+   * - In Supabase Realtime, calling `channel.subscribe()` sends `phx_join`, which requires `SELECT` (read)
+   *   permission on `realtime.messages`. A caller NEVER has `SELECT` permission on another user's inbox.
+   * - Calling `channel.send({ type: 'broadcast', ... })` on an unsubscribed private channel sends an
+   *   authenticated HTTP POST to `/realtime/v1/api/broadcast` (`private: true`), which checks ONLY `INSERT`
+   *   (write) permission on `realtime.messages` ("Verified 1on1 peer can send call invite to peer inbox").
+   *
+   * IMPORTANT: A `true` return value ONLY confirms that the Supabase Realtime broker authorized and accepted
+   * the broadcast. It is NOT proof that the recipient device is online or received the invitation.
    */
-  private async publishInviteToPeerInboxChannel(
+  public async publishInviteToPeerInboxChannel(
     serverVerifiedPeerId: string,
     rawSignal: Omit<VoiceCallSignalMessage, 'signalId' | 'cryptoProof'> & {
       signalId?: string;
     },
     cryptoBundle: CallCryptoSessionBundle
   ): Promise<boolean> {
-    const supabase = getSupabase();
-    if (!supabase) return false;
+    const normalizedPeerId =
+      typeof serverVerifiedPeerId === 'string' ? serverVerifiedPeerId.trim() : '';
+    if (!normalizedPeerId) return false;
 
     const verifiedSession = await this.getVerifiedSessionUser();
-    if (!verifiedSession || verifiedSession.userId === serverVerifiedPeerId) {
+    if (!verifiedSession || verifiedSession.userId === normalizedPeerId) {
       return false;
     }
 
@@ -1156,63 +1345,47 @@ export class OneToOneVoiceCallManager {
     const signedSignal = await createSignedEncryptedSignal(signalWithId, cryptoBundle);
     if (!signedSignal) return false;
 
-    const inboxTopic = `spark_call_inbox_${serverVerifiedPeerId}`;
+    const inboxTopic = buildOwnCallInboxTopic(normalizedPeerId);
 
-    return new Promise((resolve) => {
-      let settled = false;
-      const writeOnlyChannel = supabase.channel(inboxTopic, {
-        config: {
-          private: true,
-          broadcast: { self: false, ack: true },
-        },
+    if (this.testTransportOverride?.publishBroadcastWithoutSubscribe) {
+      return this.testTransportOverride.publishBroadcastWithoutSubscribe({
+        topic: inboxTopic,
+        userId: verifiedSession.userId,
+        accessToken: verifiedSession.accessToken,
+        isPrivate: true,
+        event: 'voice_call_signal',
+        payload: signedSignal,
       });
+    }
 
-      const cleanup = () => {
-        setTimeout(() => {
-          try {
-            writeOnlyChannel.unsubscribe();
-            supabase.removeChannel(writeOnlyChannel);
-          } catch {}
-        }, 300);
-      };
+    const supabase = getSupabase();
+    if (!supabase) return false;
 
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          cleanup();
-          resolve(false);
-        }
-      }, 4500);
+    await this.evictStaleChannelsByTopic(inboxTopic);
+    await supabase.realtime.setAuth(verifiedSession.accessToken);
 
-      writeOnlyChannel.subscribe(async (status: string) => {
-        if (settled) return;
-        if (status === 'SUBSCRIBED') {
-          settled = true;
-          clearTimeout(timer);
-          try {
-            const resp = await writeOnlyChannel.send({
-              type: 'broadcast',
-              event: 'voice_call_signal',
-              payload: signedSignal,
-            });
-            cleanup();
-            resolve(resp === 'ok');
-          } catch {
-            cleanup();
-            resolve(false);
-          }
-        } else if (
-          status === 'CHANNEL_ERROR' ||
-          status === 'TIMED_OUT' ||
-          status === 'CLOSED'
-        ) {
-          settled = true;
-          clearTimeout(timer);
-          cleanup();
-          resolve(false);
-        }
-      });
+    const writeOnlyChannel = supabase.channel(inboxTopic, {
+      config: {
+        private: true,
+        broadcast: { self: false, ack: true },
+      },
     });
+
+    try {
+      // Do NOT call writeOnlyChannel.subscribe(): send() on an unsubscribed channel uses the
+      // authenticated Realtime REST broadcast endpoint, checking INSERT RLS without SELECT RLS.
+      const resp = await writeOnlyChannel.send({
+        type: 'broadcast',
+        event: 'voice_call_signal',
+        payload: signedSignal,
+      });
+      return resp === 'ok';
+    } catch (err) {
+      console.warn('[VoiceCall] Private peer inbox broadcast rejected or failed:', err);
+      return false;
+    } finally {
+      await this.evictChannelInstance(writeOnlyChannel);
+    }
   }
 
   /**
@@ -1223,22 +1396,14 @@ export class OneToOneVoiceCallManager {
     conversationId: string,
     expectedTargetUserId?: string
   ): Promise<{ success: boolean; error?: string }> {
-    unlockSound();
+    if (typeof window !== 'undefined') {
+      try {
+        unlockSound();
+      } catch {}
+    }
 
     if (this.state.status !== 'idle' && this.state.status !== 'ended') {
       return { success: false, error: 'You are already in an active call.' };
-    }
-
-    if (
-      typeof window === 'undefined' ||
-      !navigator.mediaDevices ||
-      typeof navigator.mediaDevices.getUserMedia !== 'function' ||
-      typeof RTCPeerConnection === 'undefined'
-    ) {
-      return {
-        success: false,
-        error: 'WebRTC voice calling is not supported in this browser.',
-      };
     }
 
     const sessionInfo = await this.getVerifiedSessionUser();
@@ -1250,7 +1415,11 @@ export class OneToOneVoiceCallManager {
     }
 
     let candidateConvId = conversationId;
-    if (expectedTargetUserId && expectedTargetUserId !== sessionInfo.userId) {
+    if (
+      !this.testTransportOverride &&
+      expectedTargetUserId &&
+      expectedTargetUserId !== sessionInfo.userId
+    ) {
       try {
         candidateConvId = await getOrCreateRealConversation(
           sessionInfo.userId,
@@ -1314,6 +1483,19 @@ export class OneToOneVoiceCallManager {
     this.callRoomChannel = privateRoomChannel;
 
     // 3. Request microphone access
+    if (
+      typeof window === 'undefined' ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getUserMedia !== 'function' ||
+      typeof RTCPeerConnection === 'undefined'
+    ) {
+      this.releaseMediaAndConnections();
+      return {
+        success: false,
+        error: 'WebRTC voice calling is not supported in this browser.',
+      };
+    }
+
     let micStream: MediaStream;
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
@@ -2176,7 +2358,11 @@ export class OneToOneVoiceCallManager {
    */
   public async endVoiceCall(reason = 'Call ended.', notifyPeer = true): Promise<void> {
     this.stopRingLoop();
-    playCallEndedTone();
+    if (typeof window !== 'undefined') {
+      try {
+        playCallEndedTone();
+      } catch {}
+    }
 
     const activeCallId = this.state.callId;
     const activeConvId = this.state.conversationId;
@@ -2292,9 +2478,16 @@ export class OneToOneVoiceCallManager {
 
   private startRingLoop(mode: 'incoming' | 'outgoing'): void {
     this.stopRingLoop();
+    if (typeof window === 'undefined') return;
     const playFn = mode === 'incoming' ? playIncomingRingTone : playOutgoingRingbackTone;
-    playFn();
-    this.ringInterval = setInterval(playFn, 2400);
+    try {
+      playFn();
+    } catch {}
+    this.ringInterval = setInterval(() => {
+      try {
+        playFn();
+      } catch {}
+    }, 2400);
   }
 
   private stopRingLoop(): void {

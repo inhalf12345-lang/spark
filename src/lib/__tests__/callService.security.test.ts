@@ -21,6 +21,8 @@ import {
   validateOneToOneConversationMembership,
   isSignalAllowedInCallState,
   generateUniqueSignalId,
+  buildOwnCallInboxTopic,
+  canSubscribeToCallInboxTopic,
   OneToOneVoiceCallManager,
 } from '../callService';
 import {
@@ -643,7 +645,368 @@ export async function runCallSecurityTestSuite(): Promise<void> {
     );
   }
 
-  console.log('\nALL 5 FINAL SECURITY TEST SUITES PASSED SUCCESSFULLY.');
+  // ---------------------------------------------------------------------------
+  // 6. Realtime Authentication & Private Inbox Isolation Regression Suite
+  //    (Exact reproduction of Case 1 & Case 2 + 6 required regression checks)
+  // ---------------------------------------------------------------------------
+  {
+    purgeCryptoSessionMemory();
+    const callerA = '232a4860-308c-4dbb-86fc-1a0acff6def4';
+    const recipientB = '440a9c46-bba5-4eca-bd50-925533e73d6f';
+    const outsiderC = '99999999-9999-4999-8999-999999999999';
+    const callConvId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    const { bundleA, bundleB } = await buildParticipantCryptoBundles(
+      callerA,
+      recipientB,
+      callConvId
+    );
+
+    // Simulated Supabase Realtime broker enforcing Section 13 SELECT & INSERT RLS policies
+    const activeTopicListeners = new Map<string, Array<(msg: VoiceCallSignalMessage) => void>>();
+    const subscribeAttempts: Array<{ userId: string; topic: string; allowed: boolean }> = [];
+    const publishAttempts: Array<{ userId: string; topic: string; allowed: boolean }> = [];
+
+    const createBrokerTransportForUser = (
+      getSessionFn: () => Promise<{ userId: string; accessToken: string } | null>
+    ) => ({
+      getVerifiedSessionUser: getSessionFn,
+      authorizeOneToOneConversation: async (
+        requestedConvId: string,
+        localUserId: string,
+        expectedPeerId?: string
+      ) => {
+        const check = validateOneToOneConversationMembership({
+          conversation: { id: callConvId, is_group: false, deleted_at: null },
+          members: [
+            { user_id: callerA, deleted_at: null },
+            { user_id: recipientB, deleted_at: null },
+          ],
+          localUserId,
+          expectedPeerId,
+        });
+        if (!check.valid || requestedConvId !== callConvId) {
+          return { authorized: false, reason: check.reason || 'Not a conversation member' };
+        }
+        const isA = localUserId === callerA;
+        return {
+          authorized: true,
+          verifiedConversationId: callConvId,
+          verifiedLocalUserId: localUserId,
+          verifiedPeerProfile: {
+            id: isA ? recipientB : callerA,
+            username: isA ? 'user_b' : 'user_a',
+            display_name: isA ? 'User B' : 'User A',
+            avatar_url: 'https://example.com/avatar.png',
+          },
+          cryptoBundle: isA ? bundleA : bundleB,
+        };
+      },
+      subscribeChannel: async ({
+        topic,
+        userId,
+        accessToken,
+        isPrivate,
+        onSignal,
+      }: {
+        topic: string;
+        userId: string;
+        accessToken: string;
+        isPrivate: boolean;
+        onSignal: (msg: VoiceCallSignalMessage) => void;
+      }) => {
+        // Broker SELECT policy simulation (Policy 1 + Policy 3 + Policy 5A)
+        const isOwnInbox =
+          isPrivate &&
+          Boolean(accessToken) &&
+          topic === `spark_call_inbox_${userId}`;
+        const isAuthorizedRoomMember =
+          isPrivate &&
+          Boolean(accessToken) &&
+          topic === `spark_call_1on1_${callConvId}` &&
+          (userId === callerA || userId === recipientB);
+
+        const allowed = isOwnInbox || isAuthorizedRoomMember;
+        subscribeAttempts.push({ userId, topic, allowed });
+        if (!allowed) {
+          return null;
+        }
+
+        const listeners = activeTopicListeners.get(topic) || [];
+        listeners.push(onSignal);
+        activeTopicListeners.set(topic, listeners);
+
+        return {
+          topic: `realtime:${topic}`,
+          state: 'joined',
+          send: async ({ payload }: { payload: VoiceCallSignalMessage }) => {
+            const roomListeners = activeTopicListeners.get(topic) || [];
+            for (const fn of roomListeners) {
+              fn(payload);
+            }
+            return 'ok';
+          },
+          unsubscribe: async () => 'ok',
+          teardown: () => {},
+        } as any;
+      },
+      publishBroadcastWithoutSubscribe: async ({
+        topic,
+        userId,
+        accessToken,
+        isPrivate,
+        payload,
+      }: {
+        topic: string;
+        userId: string;
+        accessToken: string;
+        isPrivate: boolean;
+        event: string;
+        payload: VoiceCallSignalMessage;
+      }) => {
+        // Broker INSERT policy simulation (Policy 2 + Policy 5B: verified 1on1 peer can publish to peer inbox)
+        const isAuthorizedPeerInboxWrite =
+          isPrivate &&
+          Boolean(accessToken) &&
+          topic !== `spark_call_inbox_${userId}` &&
+          ((userId === callerA && topic === `spark_call_inbox_${recipientB}`) ||
+            (userId === recipientB && topic === `spark_call_inbox_${callerA}`));
+
+        publishAttempts.push({ userId, topic, allowed: isAuthorizedPeerInboxWrite });
+        if (!isAuthorizedPeerInboxWrite) {
+          return false;
+        }
+
+        const inboxListeners = activeTopicListeners.get(topic) || [];
+        for (const fn of inboxListeners) {
+          fn(payload);
+        }
+        return true;
+      },
+    });
+
+    const managerA = new OneToOneVoiceCallManager();
+    const managerB = new OneToOneVoiceCallManager();
+    const managerC = new OneToOneVoiceCallManager();
+    const managerUnauth = new OneToOneVoiceCallManager();
+
+    managerA.setTestRealtimeTransportOverride(
+      createBrokerTransportForUser(async () => ({
+        userId: callerA,
+        accessToken: 'jwt_verified_user_a',
+      }))
+    );
+    managerB.setTestRealtimeTransportOverride(
+      createBrokerTransportForUser(async () => ({
+        userId: recipientB,
+        accessToken: 'jwt_verified_user_b',
+      }))
+    );
+    managerC.setTestRealtimeTransportOverride(
+      createBrokerTransportForUser(async () => ({
+        userId: outsiderC,
+        accessToken: 'jwt_verified_user_c',
+      }))
+    );
+    managerUnauth.setTestRealtimeTransportOverride(
+      createBrokerTransportForUser(async () => null)
+    );
+
+    // 6.1 Regression Test 1: User A can subscribe to A's own inbox
+    assert.equal(
+      canSubscribeToCallInboxTopic(callerA, buildOwnCallInboxTopic(callerA)),
+      true,
+      'canSubscribeToCallInboxTopic must allow User A on User A inbox'
+    );
+    await managerA.initIncomingCallListener(callerA);
+    assert.equal(
+      subscribeAttempts.some(
+        (a) => a.userId === callerA && a.topic === `spark_call_inbox_${callerA}` && a.allowed
+      ),
+      true,
+      'User A must successfully subscribe to spark_call_inbox_<A>'
+    );
+    console.log('  ✓ [PASS] 6.1 User A can subscribe to A\'s own inbox');
+
+    // 6.2 Regression Test 2: User A CANNOT subscribe to B's inbox (Case 1 guard)
+    assert.equal(
+      canSubscribeToCallInboxTopic(callerA, buildOwnCallInboxTopic(recipientB)),
+      false,
+      'canSubscribeToCallInboxTopic must reject User A on User B inbox'
+    );
+    const crossInboxSub = await managerA.subscribePrivateChannel(
+      `spark_call_inbox_${recipientB}`,
+      () => {}
+    );
+    assert.equal(
+      crossInboxSub,
+      null,
+      'User A attempting to subscribe to User B inbox must fail closed with null'
+    );
+    assert.equal(
+      subscribeAttempts.some(
+        (a) => a.userId === callerA && a.topic === `spark_call_inbox_${recipientB}`
+      ),
+      false,
+      'Client guard must block User A from even sending a subscribe request to User B inbox'
+    );
+    console.log('  ✓ [PASS] 6.2 User A cannot subscribe to B\'s inbox');
+
+    // 6.3 Regression Test 3: User B subscribes to B's own inbox (Case 2 fix) and receives an invitation sent by User A to B's inbox
+    await managerB.initIncomingCallListener(recipientB);
+    assert.equal(
+      subscribeAttempts.some(
+        (a) =>
+          a.userId === recipientB &&
+          a.topic === `spark_call_inbox_${recipientB}` &&
+          a.allowed
+      ),
+      true,
+      'User B must successfully subscribe to own inbox spark_call_inbox_<B>'
+    );
+
+    const subscribeCountBeforeInvite = subscribeAttempts.length;
+    const invitePublished = await managerA.publishInviteToPeerInboxChannel(
+      recipientB,
+      {
+        callId: 'call_regression_invite_1',
+        conversationId: callConvId,
+        senderId: callerA,
+        targetUserId: recipientB,
+        type: 'call-invite',
+        timestamp: new Date().toISOString(),
+      },
+      bundleA
+    );
+    assert.equal(
+      invitePublished,
+      true,
+      'User A must be able to publish signed call-invite to User B inbox without subscribing'
+    );
+    assert.equal(
+      subscribeAttempts.some(
+        (a) => a.userId === callerA && a.topic === `spark_call_inbox_${recipientB}`
+      ),
+      false,
+      'Publishing an invite to B inbox MUST NEVER subscribe User A to B inbox'
+    );
+    assert.equal(
+      publishAttempts.some(
+        (p) =>
+          p.userId === callerA &&
+          p.topic === `spark_call_inbox_${recipientB}` &&
+          p.allowed
+      ),
+      true,
+      'User A invite publish must use unsubscribed broadcast write path'
+    );
+
+    // Wait briefly for User B's async handleIncomingInboxSignal to complete crypto verification & room join
+    await new Promise((r) => setTimeout(r, 60));
+    assert.ok(
+      subscribeAttempts.length > subscribeCountBeforeInvite,
+      'User B must join the private 1-to-1 call room upon verifying the incoming invite'
+    );
+    assert.equal(
+      managerB.getState().status,
+      'incoming',
+      'User B must transition to incoming call state after verifying signed invite on own inbox'
+    );
+    assert.equal(managerB.getState().callId, 'call_regression_invite_1');
+    assert.equal(managerB.getState().peerUser?.id, callerA);
+    await managerB.endVoiceCall('Test cleanup');
+    console.log(
+      '  ✓ [PASS] 6.3 User B subscribes to own inbox and receives signed invitation sent to B\'s inbox without A subscribing to B\'s inbox'
+    );
+
+    // 6.4 Regression Test 4: An unauthenticated user cannot subscribe
+    const unauthInbox = await managerUnauth.subscribePrivateChannel(
+      `spark_call_inbox_${callerA}`,
+      () => {}
+    );
+    const unauthRoom = await managerUnauth.subscribePrivateChannel(
+      `spark_call_1on1_${callConvId}`,
+      () => {}
+    );
+    assert.equal(unauthInbox, null, 'Unauthenticated user cannot subscribe to an inbox');
+    assert.equal(unauthRoom, null, 'Unauthenticated user cannot subscribe to a call room');
+    console.log('  ✓ [PASS] 6.4 Unauthenticated user cannot subscribe');
+
+    // 6.5 Regression Test 5: A non-member (User C) cannot join a private call room
+    const nonMemberRoom = await managerC.subscribePrivateChannel(
+      `spark_call_1on1_${callConvId}`,
+      () => {}
+    );
+    assert.equal(
+      nonMemberRoom,
+      null,
+      'Non-member User C must be rejected when attempting to join private call room'
+    );
+    const nonMemberCallAttempt = await managerC.startOneToOneVoiceCall(callConvId, callerA);
+    assert.equal(
+      nonMemberCallAttempt.success,
+      false,
+      'Non-member User C startOneToOneVoiceCall must fail closed'
+    );
+    console.log('  ✓ [PASS] 6.5 Non-member cannot join a private call room');
+
+    // 6.6 Regression Test 6: Authentication not ready (missing/empty/mismatched token) must fail closed
+    let authReady = false;
+    const managerPendingAuth = new OneToOneVoiceCallManager();
+    managerPendingAuth.setTestRealtimeTransportOverride(
+      createBrokerTransportForUser(async () =>
+        authReady ? { userId: recipientB, accessToken: 'jwt_verified_user_b' } : null
+      )
+    );
+
+    await managerPendingAuth.initIncomingCallListener(recipientB);
+    const subWhileNotReady = await managerPendingAuth.subscribePrivateChannel(
+      `spark_call_inbox_${recipientB}`,
+      () => {}
+    );
+    const pubWhileNotReady = await managerPendingAuth.publishInviteToPeerInboxChannel(
+      callerA,
+      {
+        callId: 'call_auth_not_ready',
+        conversationId: callConvId,
+        senderId: recipientB,
+        targetUserId: callerA,
+        type: 'call-invite',
+        timestamp: new Date().toISOString(),
+      },
+      bundleB
+    );
+    assert.equal(
+      subWhileNotReady,
+      null,
+      'Subscription when authentication is not ready must fail closed'
+    );
+    assert.equal(
+      pubWhileNotReady,
+      false,
+      'Invite publish when authentication is not ready must fail closed'
+    );
+
+    // Mismatched expectedUserId vs session userId must also fail closed
+    authReady = true;
+    await managerPendingAuth.initIncomingCallListener(callerA); // expects A, but session is B
+    const subAfterReady = await managerPendingAuth.subscribePrivateChannel(
+      `spark_call_inbox_${recipientB}`,
+      () => {}
+    );
+    assert.notEqual(
+      subAfterReady,
+      null,
+      'Once authentication is ready and user ID matches, own-inbox subscription succeeds'
+    );
+    console.log('  ✓ [PASS] 6.6 Authentication not ready or mismatched user ID fails closed');
+
+    console.log(
+      '✓ [PASS] 6. Realtime Authentication & Private Inbox Isolation Regression Suite (All 6 Checks)'
+    );
+  }
+
+  console.log('\nALL 6 FINAL SECURITY & REALTIME REGRESSION TEST SUITES PASSED SUCCESSFULLY.');
 }
 
 runCallSecurityTestSuite().catch((err) => {

@@ -608,21 +608,26 @@ export default function App() {
     };
   }, [isAuthenticated, profile.id, loadConversations]);
 
-  // Initialize authenticated 1-to-1 incoming voice call listener
+  // Initialize authenticated 1-to-1 incoming voice call listener only after auth session initialization completes
   useEffect(() => {
+    if (isSessionInitializing) {
+      return;
+    }
+
     if (!isAuthenticated || !profile.id || !isSupabaseConfigured()) {
       voiceCallManager.cleanupInboxChannel();
       return;
     }
 
-    voiceCallManager.initIncomingCallListener(profile.id).catch((err) => {
+    const activeAuthUserId = sessionUser?.id || profile.id;
+    voiceCallManager.initIncomingCallListener(activeAuthUserId).catch((err) => {
       console.warn('Voice call inbox listener notice:', err);
     });
 
     return () => {
       voiceCallManager.cleanupInboxChannel();
     };
-  }, [isAuthenticated, profile.id]);
+  }, [isAuthenticated, profile.id, sessionUser?.id, isSessionInitializing]);
 
   const syncProfileFromDatabase = (authUser: any, data: any) => {
     setProfile((prev) => {
