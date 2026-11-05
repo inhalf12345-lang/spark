@@ -178,7 +178,57 @@ export type VoiceCallSignalType =
   | 'webrtc-answer'
   | 'webrtc-ice';
 
+export interface PublishedPublicKeyDescriptor {
+  kty: 'EC';
+  crv: 'P-256';
+  x: string;
+  y: string;
+  alg: 'ECDH-ES+HKDF-256' | 'ES256';
+  keyUsage: 'keyAgreement' | 'digitalSignature';
+  fingerprint: string;
+}
+
+export interface PublishedIdentityBinding {
+  version: 'spark_id_bind_v2';
+  userId: string;
+  keyRotationVersion: number;
+  ecdhFingerprint: string;
+  ecdsaFingerprint: string;
+  issuedAt: string;
+  signature: string;
+}
+
+export interface PublishedUserCryptoKeyBundle {
+  // Top-level ECDH P-256 public JWK coordinates retained for backward-compatible chat E2EE
+  kty: 'EC';
+  crv: 'P-256';
+  x: string;
+  y: string;
+  ext: true;
+  // Explicit v2 separated key metadata
+  bundleVersion: 'spark_key_bundle_v2';
+  algorithm: 'ECDH-P256+ECDSA-P256-v2';
+  userId: string;
+  keyRotationVersion: number;
+  ecdhPublicKey: PublishedPublicKeyDescriptor;
+  ecdsaSigningPublicKey: PublishedPublicKeyDescriptor;
+  identityBinding: PublishedIdentityBinding;
+}
+
+export interface PeerPinnedKeyRecord {
+  localUserId: string;
+  peerUserId: string;
+  keyRotationVersion: number;
+  ecdhFingerprint: string;
+  ecdsaFingerprint: string;
+  ecdhPublicJwk: JsonWebKey;
+  ecdsaPublicJwk: JsonWebKey;
+  pinnedAt: string;
+  updatedAt: string;
+}
+
 export interface VoiceCallSignalMessage {
+  signalId: string;
   callId: string;
   conversationId: string;
   senderId: string;
@@ -192,6 +242,10 @@ export interface VoiceCallSignalMessage {
   cryptoProof?: {
     ciphertext: string;
     iv: string;
+    signature: string;
+    version: string;
+    senderEcdsaFingerprint: string;
+    keyRotationVersion: number;
   };
 }
 
@@ -210,4 +264,5 @@ export interface VoiceCallState {
   errorMessage: string | null;
   isPrivateChannel: boolean;
 }
+
 

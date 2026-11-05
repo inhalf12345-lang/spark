@@ -354,6 +354,246 @@ CREATE POLICY "Group members can view media" ON storage.objects
     bucket_id IN ('chat-media', 'storage')
     AND auth.uid() IS NOT NULL
   );
+
+-- =========================================================
+-- AUTHENTICATED PRIVATE REALTIME CHANNELS (1-TO-1 VOICE CALLS)
+-- =========================================================
+ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE public.conversation_members ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'realtime' AND table_name = 'messages'
+  ) THEN
+    ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+
+    DROP POLICY IF EXISTS "Authenticated users can receive private call signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Authenticated users can send private call signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Call inbox owner can receive own inbox signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Verified 1on1 peer can send call invite to peer inbox" ON realtime.messages;
+    DROP POLICY IF EXISTS "Verified 1on1 members can receive room call signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Verified 1on1 members can send room call signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Restrict spark call topics to authorized policies" ON realtime.messages;
+    DROP POLICY IF EXISTS "Restrict spark call topics select" ON realtime.messages;
+    DROP POLICY IF EXISTS "Restrict spark call topics insert" ON realtime.messages;
+
+    -- Policy 1 (PERMISSIVE SELECT): Only the authenticated user themselves can subscribe to and read their own call inbox
+    CREATE POLICY "Call inbox owner can receive own inbox signals"
+      ON realtime.messages AS PERMISSIVE
+      FOR SELECT
+      TO authenticated
+      USING (
+        auth.uid() IS NOT NULL
+        AND realtime.messages.extension = 'broadcast'
+        AND realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
+      );
+
+    -- Policy 2 (PERMISSIVE INSERT): Only an authenticated user who shares an active, non-deleted, non-group
+    -- conversation with EXACTLY 2 active members (sender + target) can send a broadcast invite to the peer's inbox.
+    -- Uses literal prefix matching (LEFT(..., 17) = 'spark_call_inbox_' AND LIKE ... ESCAPE '\\') so '_' is never a wildcard.
+    CREATE POLICY "Verified 1on1 peer can send call invite to peer inbox"
+      ON realtime.messages AS PERMISSIVE
+      FOR INSERT
+      TO authenticated
+      WITH CHECK (
+        auth.uid() IS NOT NULL
+        AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 17) = 'spark_call_inbox_'
+        AND realtime.topic() LIKE 'spark\\_call\\_inbox\\_%' ESCAPE '\\'
+        AND realtime.topic() <> ('spark_call_inbox_' || auth.uid()::text)
+        AND EXISTS (
+          SELECT 1
+          FROM public.conversations c
+          JOIN public.conversation_members cm_sender
+            ON cm_sender.conversation_id = c.id
+          JOIN public.conversation_members cm_target
+            ON cm_target.conversation_id = c.id
+          WHERE COALESCE(c.is_group, FALSE) = FALSE
+            AND c.deleted_at IS NULL
+            AND cm_sender.user_id = auth.uid()
+            AND cm_sender.deleted_at IS NULL
+            AND cm_target.user_id <> auth.uid()
+            AND cm_target.deleted_at IS NULL
+            AND ('spark_call_inbox_' || cm_target.user_id::text) = realtime.topic()
+            AND (
+              SELECT COUNT(DISTINCT cm_cnt.user_id)
+              FROM public.conversation_members cm_cnt
+              WHERE cm_cnt.conversation_id = c.id
+                AND cm_cnt.deleted_at IS NULL
+            ) = 2
+        )
+      );
+
+    -- Policy 3 (PERMISSIVE SELECT): Only authenticated active members of a non-deleted, non-group conversation
+    -- with EXACTLY 2 active members can subscribe to and receive signals in that conversation's call room
+    CREATE POLICY "Verified 1on1 members can receive room call signals"
+      ON realtime.messages AS PERMISSIVE
+      FOR SELECT
+      TO authenticated
+      USING (
+        auth.uid() IS NOT NULL
+        AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+        AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+        AND EXISTS (
+          SELECT 1
+          FROM public.conversations c
+          JOIN public.conversation_members cm
+            ON cm.conversation_id = c.id
+          WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+            AND COALESCE(c.is_group, FALSE) = FALSE
+            AND c.deleted_at IS NULL
+            AND cm.user_id = auth.uid()
+            AND cm.deleted_at IS NULL
+            AND (
+              SELECT COUNT(DISTINCT cm_cnt.user_id)
+              FROM public.conversation_members cm_cnt
+              WHERE cm_cnt.conversation_id = c.id
+                AND cm_cnt.deleted_at IS NULL
+            ) = 2
+        )
+      );
+
+    -- Policy 4 (PERMISSIVE INSERT): Only authenticated active members of a non-deleted, non-group conversation
+    -- with EXACTLY 2 active members can send signals in that conversation's call room
+    CREATE POLICY "Verified 1on1 members can send room call signals"
+      ON realtime.messages AS PERMISSIVE
+      FOR INSERT
+      TO authenticated
+      WITH CHECK (
+        auth.uid() IS NOT NULL
+        AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+        AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+        AND EXISTS (
+          SELECT 1
+          FROM public.conversations c
+          JOIN public.conversation_members cm
+            ON cm.conversation_id = c.id
+          WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+            AND COALESCE(c.is_group, FALSE) = FALSE
+            AND c.deleted_at IS NULL
+            AND cm.user_id = auth.uid()
+            AND cm.deleted_at IS NULL
+            AND (
+              SELECT COUNT(DISTINCT cm_cnt.user_id)
+              FROM public.conversation_members cm_cnt
+              WHERE cm_cnt.conversation_id = c.id
+                AND cm_cnt.deleted_at IS NULL
+            ) = 2
+        )
+      );
+
+    -- Policy 5A (RESTRICTIVE SELECT): Enforces that NO pre-existing permissive SELECT policy on realtime.messages
+    -- can bypass Spark call authorization on literal 'spark_call_' topics, while leaving non-call topics untouched.
+    CREATE POLICY "Restrict spark call topics select"
+      ON realtime.messages AS RESTRICTIVE
+      FOR SELECT
+      TO public
+      USING (
+        (
+          COALESCE(LEFT(realtime.topic(), 11), '') <> 'spark_call_'
+          AND realtime.topic() NOT LIKE 'spark\\_call\\_%' ESCAPE '\\'
+        )
+        OR (
+          auth.uid() IS NOT NULL
+          AND realtime.messages.extension = 'broadcast'
+          AND (
+            realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
+            OR (
+              LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+              AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+              AND EXISTS (
+                SELECT 1
+                FROM public.conversations c
+                JOIN public.conversation_members cm
+                  ON cm.conversation_id = c.id
+                WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+                  AND COALESCE(c.is_group, FALSE) = FALSE
+                  AND c.deleted_at IS NULL
+                  AND cm.user_id = auth.uid()
+                  AND cm.deleted_at IS NULL
+                  AND (
+                    SELECT COUNT(DISTINCT cm_cnt.user_id)
+                    FROM public.conversation_members cm_cnt
+                    WHERE cm_cnt.conversation_id = c.id
+                      AND cm_cnt.deleted_at IS NULL
+                  ) = 2
+              )
+            )
+          )
+        )
+      );
+
+    -- Policy 5B (RESTRICTIVE INSERT): Enforces that NO pre-existing permissive INSERT policy on realtime.messages
+    -- can bypass Spark call authorization on literal 'spark_call_' topics, while leaving non-call topics untouched.
+    CREATE POLICY "Restrict spark call topics insert"
+      ON realtime.messages AS RESTRICTIVE
+      FOR INSERT
+      TO public
+      WITH CHECK (
+        (
+          COALESCE(LEFT(realtime.topic(), 11), '') <> 'spark_call_'
+          AND realtime.topic() NOT LIKE 'spark\\_call\\_%' ESCAPE '\\'
+        )
+        OR (
+          auth.uid() IS NOT NULL
+          AND realtime.messages.extension = 'broadcast'
+          AND (
+            (
+              LEFT(realtime.topic(), 17) = 'spark_call_inbox_'
+              AND realtime.topic() LIKE 'spark\\_call\\_inbox\\_%' ESCAPE '\\'
+              AND realtime.topic() <> ('spark_call_inbox_' || auth.uid()::text)
+              AND EXISTS (
+                SELECT 1
+                FROM public.conversations c
+                JOIN public.conversation_members cm_sender
+                  ON cm_sender.conversation_id = c.id
+                JOIN public.conversation_members cm_target
+                  ON cm_target.conversation_id = c.id
+                WHERE COALESCE(c.is_group, FALSE) = FALSE
+                  AND c.deleted_at IS NULL
+                  AND cm_sender.user_id = auth.uid()
+                  AND cm_sender.deleted_at IS NULL
+                  AND cm_target.user_id <> auth.uid()
+                  AND cm_target.deleted_at IS NULL
+                  AND ('spark_call_inbox_' || cm_target.user_id::text) = realtime.topic()
+                  AND (
+                    SELECT COUNT(DISTINCT cm_cnt.user_id)
+                    FROM public.conversation_members cm_cnt
+                    WHERE cm_cnt.conversation_id = c.id
+                      AND cm_cnt.deleted_at IS NULL
+                  ) = 2
+              )
+            )
+            OR (
+              LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+              AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+              AND EXISTS (
+                SELECT 1
+                FROM public.conversations c
+                JOIN public.conversation_members cm
+                  ON cm.conversation_id = c.id
+                WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+                  AND COALESCE(c.is_group, FALSE) = FALSE
+                  AND c.deleted_at IS NULL
+                  AND cm.user_id = auth.uid()
+                  AND cm.deleted_at IS NULL
+                  AND (
+                    SELECT COUNT(DISTINCT cm_cnt.user_id)
+                    FROM public.conversation_members cm_cnt
+                    WHERE cm_cnt.conversation_id = c.id
+                      AND cm_cnt.deleted_at IS NULL
+                  ) = 2
+              )
+            )
+          )
+        )
+      );
+  END IF;
+END $$;
 `;
 
 // Script 3: Safe Non-Destructive Migration Script for Existing Databases
@@ -647,8 +887,57 @@ CREATE TRIGGER on_message_inserted_send_push
   FOR EACH ROW
   EXECUTE FUNCTION public.trigger_send_push_notification();
 
--- 13. Authenticated Private Realtime Channels Authorization (WebRTC Voice Call Signaling)
--- Enforces server-side RLS on realtime.messages for private call signaling channels
+-- =========================================================
+-- 13. Authenticated Private Realtime Channels Authorization (WebRTC 1-to-1 Voice Call Signaling)
+-- =========================================================
+-- Step 13A: Pre-Migration Inspection Query (Safe Read-Only Check)
+-- Run this before or after migration to inspect existing policies on realtime.messages:
+--   SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
+--   FROM pg_policies
+--   WHERE schemaname = 'realtime' AND tablename = 'messages'
+--   ORDER BY permissive DESC, policyname ASC;
+--
+-- Step 13B: Ensure public.user_crypto_keys exists and enforces strict owner-only write RLS (auth.uid() = user_id)
+-- so no user can overwrite another user's separated ECDH + ECDSA P-256 public key bundle:
+CREATE TABLE IF NOT EXISTS public.user_crypto_keys (
+  user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE PRIMARY KEY,
+  public_key JSONB NOT NULL,
+  algorithm TEXT NOT NULL DEFAULT 'ECDH-P256+ECDSA-P256-v2',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.user_crypto_keys ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public crypto keys are viewable by authenticated users" ON public.user_crypto_keys;
+CREATE POLICY "Public crypto keys are viewable by authenticated users"
+  ON public.user_crypto_keys FOR SELECT
+  TO authenticated
+  USING (true);
+
+DROP POLICY IF EXISTS "Users can insert their own public crypto key" ON public.user_crypto_keys;
+CREATE POLICY "Users can insert their own public crypto key"
+  ON public.user_crypto_keys FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Users can update their own public crypto key" ON public.user_crypto_keys;
+CREATE POLICY "Users can update their own public crypto key"
+  ON public.user_crypto_keys FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- Step 13C: Ensure soft-delete columns exist for conversation/member active status checks
+ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE public.conversation_members ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+-- Step 13D: Configure strict PERMISSIVE + RESTRICTIVE RLS policies on realtime.messages
+-- without dropping unrelated non-Spark policies.
+-- IMPORTANT SQL NOTE ON UNDERSCORE WILDCARDS:
+-- PostgreSQL LIKE treats '_' as a single-character wildcard unless escaped with ESCAPE '\\'.
+-- Every prefix check below uses BOTH literal substring comparison (LEFT(realtime.topic(), N) = '...')
+-- AND escaped LIKE ('spark\\_call\\_%' ESCAPE '\\') so 'spark_call_' is matched strictly as a literal prefix.
 DO $$
 BEGIN
   IF EXISTS (
@@ -657,48 +946,294 @@ BEGIN
   ) THEN
     ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
 
+    -- Only drop Spark's own call policies (never drop unrelated policies)
     DROP POLICY IF EXISTS "Authenticated users can receive private call signals" ON realtime.messages;
-    CREATE POLICY "Authenticated users can receive private call signals"
-      ON realtime.messages FOR SELECT
+    DROP POLICY IF EXISTS "Authenticated users can send private call signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Call inbox owner can receive own inbox signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Verified 1on1 peer can send call invite to peer inbox" ON realtime.messages;
+    DROP POLICY IF EXISTS "Verified 1on1 members can receive room call signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Verified 1on1 members can send room call signals" ON realtime.messages;
+    DROP POLICY IF EXISTS "Restrict spark call topics to authorized policies" ON realtime.messages;
+    DROP POLICY IF EXISTS "Restrict spark call topics select" ON realtime.messages;
+    DROP POLICY IF EXISTS "Restrict spark call topics insert" ON realtime.messages;
+
+    -- Policy 1 (PERMISSIVE SELECT): Only the authenticated user themselves can subscribe to and read their own call inbox
+    CREATE POLICY "Call inbox owner can receive own inbox signals"
+      ON realtime.messages AS PERMISSIVE
+      FOR SELECT
       TO authenticated
       USING (
         auth.uid() IS NOT NULL
-        AND (
-          realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
-          OR (
-            realtime.topic() LIKE 'spark_call_1on1_%'
-            AND EXISTS (
-              SELECT 1 FROM public.conversation_members cm
-              WHERE ('spark_call_1on1_' || cm.conversation_id::text) = realtime.topic()
-                AND cm.user_id = auth.uid()
+        AND realtime.messages.extension = 'broadcast'
+        AND realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
+      );
+
+    -- Policy 2 (PERMISSIVE INSERT): Only an authenticated user who shares an active, non-deleted, non-group
+    -- conversation with EXACTLY 2 active members (sender + target) can send a broadcast invite to the peer's inbox
+    CREATE POLICY "Verified 1on1 peer can send call invite to peer inbox"
+      ON realtime.messages AS PERMISSIVE
+      FOR INSERT
+      TO authenticated
+      WITH CHECK (
+        auth.uid() IS NOT NULL
+        AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 17) = 'spark_call_inbox_'
+        AND realtime.topic() LIKE 'spark\\_call\\_inbox\\_%' ESCAPE '\\'
+        AND realtime.topic() <> ('spark_call_inbox_' || auth.uid()::text)
+        AND EXISTS (
+          SELECT 1
+          FROM public.conversations c
+          JOIN public.conversation_members cm_sender
+            ON cm_sender.conversation_id = c.id
+          JOIN public.conversation_members cm_target
+            ON cm_target.conversation_id = c.id
+          WHERE COALESCE(c.is_group, FALSE) = FALSE
+            AND c.deleted_at IS NULL
+            AND cm_sender.user_id = auth.uid()
+            AND cm_sender.deleted_at IS NULL
+            AND cm_target.user_id <> auth.uid()
+            AND cm_target.deleted_at IS NULL
+            AND ('spark_call_inbox_' || cm_target.user_id::text) = realtime.topic()
+            AND (
+              SELECT COUNT(DISTINCT cm_cnt.user_id)
+              FROM public.conversation_members cm_cnt
+              WHERE cm_cnt.conversation_id = c.id
+                AND cm_cnt.deleted_at IS NULL
+            ) = 2
+        )
+      );
+
+    -- Policy 3 (PERMISSIVE SELECT): Only authenticated active members of a non-deleted, non-group conversation
+    -- with EXACTLY 2 active members can subscribe to and receive signals in that conversation's call room
+    CREATE POLICY "Verified 1on1 members can receive room call signals"
+      ON realtime.messages AS PERMISSIVE
+      FOR SELECT
+      TO authenticated
+      USING (
+        auth.uid() IS NOT NULL
+        AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+        AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+        AND EXISTS (
+          SELECT 1
+          FROM public.conversations c
+          JOIN public.conversation_members cm
+            ON cm.conversation_id = c.id
+          WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+            AND COALESCE(c.is_group, FALSE) = FALSE
+            AND c.deleted_at IS NULL
+            AND cm.user_id = auth.uid()
+            AND cm.deleted_at IS NULL
+            AND (
+              SELECT COUNT(DISTINCT cm_cnt.user_id)
+              FROM public.conversation_members cm_cnt
+              WHERE cm_cnt.conversation_id = c.id
+                AND cm_cnt.deleted_at IS NULL
+            ) = 2
+        )
+      );
+
+    -- Policy 4 (PERMISSIVE INSERT): Only authenticated active members of a non-deleted, non-group conversation
+    -- with EXACTLY 2 active members can send signals in that conversation's call room
+    CREATE POLICY "Verified 1on1 members can send room call signals"
+      ON realtime.messages AS PERMISSIVE
+      FOR INSERT
+      TO authenticated
+      WITH CHECK (
+        auth.uid() IS NOT NULL
+        AND realtime.messages.extension = 'broadcast'
+        AND LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+        AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+        AND EXISTS (
+          SELECT 1
+          FROM public.conversations c
+          JOIN public.conversation_members cm
+            ON cm.conversation_id = c.id
+          WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+            AND COALESCE(c.is_group, FALSE) = FALSE
+            AND c.deleted_at IS NULL
+            AND cm.user_id = auth.uid()
+            AND cm.deleted_at IS NULL
+            AND (
+              SELECT COUNT(DISTINCT cm_cnt.user_id)
+              FROM public.conversation_members cm_cnt
+              WHERE cm_cnt.conversation_id = c.id
+                AND cm_cnt.deleted_at IS NULL
+            ) = 2
+        )
+      );
+
+    -- Policy 5A (RESTRICTIVE SELECT): Guarantees that NO pre-existing permissive SELECT policy on realtime.messages
+    -- can bypass Spark call authorization for literal 'spark_call_' topics, while leaving non-call topics untouched.
+    CREATE POLICY "Restrict spark call topics select"
+      ON realtime.messages AS RESTRICTIVE
+      FOR SELECT
+      TO public
+      USING (
+        (
+          COALESCE(LEFT(realtime.topic(), 11), '') <> 'spark_call_'
+          AND realtime.topic() NOT LIKE 'spark\\_call\\_%' ESCAPE '\\'
+        )
+        OR (
+          auth.uid() IS NOT NULL
+          AND realtime.messages.extension = 'broadcast'
+          AND (
+            realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
+            OR (
+              LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+              AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+              AND EXISTS (
+                SELECT 1
+                FROM public.conversations c
+                JOIN public.conversation_members cm
+                  ON cm.conversation_id = c.id
+                WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+                  AND COALESCE(c.is_group, FALSE) = FALSE
+                  AND c.deleted_at IS NULL
+                  AND cm.user_id = auth.uid()
+                  AND cm.deleted_at IS NULL
+                  AND (
+                    SELECT COUNT(DISTINCT cm_cnt.user_id)
+                    FROM public.conversation_members cm_cnt
+                    WHERE cm_cnt.conversation_id = c.id
+                      AND cm_cnt.deleted_at IS NULL
+                  ) = 2
+              )
             )
           )
         )
       );
 
-    DROP POLICY IF EXISTS "Authenticated users can send private call signals" ON realtime.messages;
-    CREATE POLICY "Authenticated users can send private call signals"
-      ON realtime.messages FOR INSERT
-      TO authenticated
+    -- Policy 5B (RESTRICTIVE INSERT): Guarantees that NO pre-existing permissive INSERT policy on realtime.messages
+    -- can bypass Spark call authorization for literal 'spark_call_' topics, while leaving non-call topics untouched.
+    CREATE POLICY "Restrict spark call topics insert"
+      ON realtime.messages AS RESTRICTIVE
+      FOR INSERT
+      TO public
       WITH CHECK (
-        auth.uid() IS NOT NULL
-        AND (
-          realtime.topic() LIKE 'spark_call_inbox_%'
-          OR (
-            realtime.topic() LIKE 'spark_call_1on1_%'
-            AND EXISTS (
-              SELECT 1 FROM public.conversation_members cm
-              WHERE ('spark_call_1on1_' || cm.conversation_id::text) = realtime.topic()
-                AND cm.user_id = auth.uid()
+        (
+          COALESCE(LEFT(realtime.topic(), 11), '') <> 'spark_call_'
+          AND realtime.topic() NOT LIKE 'spark\\_call\\_%' ESCAPE '\\'
+        )
+        OR (
+          auth.uid() IS NOT NULL
+          AND realtime.messages.extension = 'broadcast'
+          AND (
+            (
+              LEFT(realtime.topic(), 17) = 'spark_call_inbox_'
+              AND realtime.topic() LIKE 'spark\\_call\\_inbox\\_%' ESCAPE '\\'
+              AND realtime.topic() <> ('spark_call_inbox_' || auth.uid()::text)
+              AND EXISTS (
+                SELECT 1
+                FROM public.conversations c
+                JOIN public.conversation_members cm_sender
+                  ON cm_sender.conversation_id = c.id
+                JOIN public.conversation_members cm_target
+                  ON cm_target.conversation_id = c.id
+                WHERE COALESCE(c.is_group, FALSE) = FALSE
+                  AND c.deleted_at IS NULL
+                  AND cm_sender.user_id = auth.uid()
+                  AND cm_sender.deleted_at IS NULL
+                  AND cm_target.user_id <> auth.uid()
+                  AND cm_target.deleted_at IS NULL
+                  AND ('spark_call_inbox_' || cm_target.user_id::text) = realtime.topic()
+                  AND (
+                    SELECT COUNT(DISTINCT cm_cnt.user_id)
+                    FROM public.conversation_members cm_cnt
+                    WHERE cm_cnt.conversation_id = c.id
+                      AND cm_cnt.deleted_at IS NULL
+                  ) = 2
+              )
+            )
+            OR (
+              LEFT(realtime.topic(), 16) = 'spark_call_1on1_'
+              AND realtime.topic() LIKE 'spark\\_call\\_1on1\\_%' ESCAPE '\\'
+              AND EXISTS (
+                SELECT 1
+                FROM public.conversations c
+                JOIN public.conversation_members cm
+                  ON cm.conversation_id = c.id
+                WHERE ('spark_call_1on1_' || c.id::text) = realtime.topic()
+                  AND COALESCE(c.is_group, FALSE) = FALSE
+                  AND c.deleted_at IS NULL
+                  AND cm.user_id = auth.uid()
+                  AND cm.deleted_at IS NULL
+                  AND (
+                    SELECT COUNT(DISTINCT cm_cnt.user_id)
+                    FROM public.conversation_members cm_cnt
+                    WHERE cm_cnt.conversation_id = c.id
+                      AND cm_cnt.deleted_at IS NULL
+                  ) = 2
+              )
             )
           )
         )
       );
   END IF;
-EXCEPTION
-  WHEN OTHERS THEN NULL;
 END $$;
+
+-- Step 13E: Post-Migration Validation Queries (Run in Supabase SQL Editor to verify)
+-- 1) Verify all 6 Spark call policies (4 PERMISSIVE + 2 RESTRICTIVE) exist on realtime.messages:
+-- SELECT policyname, permissive, roles, cmd, qual, with_check
+-- FROM pg_policies
+-- WHERE schemaname = 'realtime' AND tablename = 'messages'
+-- ORDER BY permissive DESC, policyname ASC;
+--
+-- 2) Verify public.user_crypto_keys RLS is enabled and enforces auth.uid() = user_id on INSERT/UPDATE:
+-- SELECT policyname, permissive, roles, cmd, qual, with_check
+-- FROM pg_policies
+-- WHERE schemaname = 'public' AND tablename = 'user_crypto_keys'
+-- ORDER BY policyname ASC;
 `;
+
+export const SUPABASE_SECTION_13_VALIDATION_SQL = `-- =========================================================
+-- SPARK PHASE 1 VOICE CALLING — VALIDATION & AUDIT QUERIES
+-- Run these read-only queries in the Supabase SQL Editor before
+-- and after applying Section 13 to verify policy state.
+-- =========================================================
+
+-- 1. Inspect all RLS policies on realtime.messages (check for 4 PERMISSIVE + 2 RESTRICTIVE)
+SELECT
+  schemaname,
+  tablename,
+  policyname,
+  permissive,
+  roles,
+  cmd,
+  qual,
+  with_check
+FROM pg_policies
+WHERE schemaname = 'realtime'
+  AND tablename = 'messages'
+ORDER BY permissive DESC, policyname ASC;
+
+-- 2. Confirm RLS is enabled on realtime.messages and public.user_crypto_keys
+SELECT
+  n.nspname AS schema_name,
+  c.relname AS table_name,
+  c.relrowsecurity AS rls_enabled
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE (n.nspname = 'realtime' AND c.relname = 'messages')
+   OR (n.nspname = 'public' AND c.relname = 'user_crypto_keys');
+
+-- 3. Inspect RLS policies on public.user_crypto_keys (must enforce auth.uid() = user_id on write)
+SELECT
+  schemaname,
+  tablename,
+  policyname,
+  permissive,
+  roles,
+  cmd,
+  qual,
+  with_check
+FROM pg_policies
+WHERE schemaname = 'public'
+  AND tablename = 'user_crypto_keys'
+ORDER BY policyname ASC;
+`;
+
+
 
 
 

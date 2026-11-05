@@ -2,16 +2,22 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import {
   PublicUserProfile,
   VoiceCallSignalMessage,
+  VoiceCallSignalType,
   VoiceCallState,
+  VoiceCallStatus,
 } from '../types';
 import { getSupabase, isSupabaseConfigured } from './supabase';
 import { ensureSupabaseAuthSession, getOrCreateRealConversation } from './chatService';
 import {
   getOrCreateDeviceIdentityKeyPair,
-  fetchRecipientPublicKey,
-  deriveConversationKey,
+  syncPublicKeyToSupabase,
+  fetchAndVerifyPeerKeyBundle,
+  deriveDirectionalCallSignalKey,
+  signCallSignalCanonical,
+  verifyCallSignalSignature,
   encryptE2EEMessage,
   decryptE2EEMessage,
+  bufferToBase64,
 } from './cryptoService';
 import {
   playIncomingRingTone,
@@ -32,6 +38,585 @@ export const FREE_STUN_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun4.l.google.com:19302' },
 ];
 
+export const SIGNAL_MAX_AGE_MS = 60_000;
+const MAX_REPLAY_CACHE_SIZE = 2000;
+export const CALL_CRYPTO_PROOF_VERSION = 'ecdsa_p256_hkdf_aes256gcm_v2';
+
+export interface CallCryptoSessionBundle {
+  localUserId: string;
+  peerUserId: string;
+  conversationId: string;
+  outboundAesKey: CryptoKey;
+  inboundAesKey: CryptoKey;
+  localSigningPrivateKey: CryptoKey;
+  peerVerifyPublicKey: CryptoKey;
+  localEcdsaFingerprint: string;
+  peerEcdsaFingerprint: string;
+  localKeyRotationVersion: number;
+  peerKeyRotationVersion: number;
+}
+
+export interface ConversationMembershipInspectionInput {
+  conversation: {
+    id: string;
+    is_group?: boolean | null;
+    deleted_at?: string | null;
+  } | null;
+  members: Array<{
+    user_id?: string | null;
+    deleted_at?: string | null;
+  }> | null;
+  localUserId: string;
+  expectedPeerId?: string;
+}
+
+/**
+ * Pure validator for 1-to-1 conversation membership.
+ * Enforces:
+ * 1. Conversation exists, is NOT a group (`is_group === false`), and is NOT deleted (`deleted_at == null`).
+ * 2. Exactly 2 active (`deleted_at == null`) distinct members exist.
+ * 3. One active member is `localUserId` and the other is `peerUserId` (`peerUserId !== localUserId`).
+ * 4. If `expectedPeerId` is provided, it must match the server-derived `peerUserId`.
+ */
+export function validateOneToOneConversationMembership(
+  input: ConversationMembershipInspectionInput
+): {
+  valid: boolean;
+  verifiedConversationId?: string;
+  verifiedPeerUserId?: string;
+  reason?: string;
+} {
+  const { conversation, members, localUserId, expectedPeerId } = input;
+  if (!localUserId || typeof localUserId !== 'string') {
+    return { valid: false, reason: 'Missing authenticated local user ID.' };
+  }
+  if (!conversation || !conversation.id) {
+    return {
+      valid: false,
+      reason: 'Conversation does not exist or access was denied by server RLS.',
+    };
+  }
+  if (Boolean(conversation.is_group)) {
+    return {
+      valid: false,
+      reason: 'Phase 1 supports one-to-one voice calls only. Group calling is disabled.',
+    };
+  }
+  if (conversation.deleted_at) {
+    return {
+      valid: false,
+      reason: 'This conversation has been deleted.',
+    };
+  }
+  if (!Array.isArray(members)) {
+    return {
+      valid: false,
+      reason: 'Failed to verify conversation membership on the server.',
+    };
+  }
+
+  const activeMemberRows = members.filter(
+    (m) => m && !m.deleted_at && typeof m.user_id === 'string' && m.user_id.trim().length > 0
+  );
+  const distinctActiveIds = Array.from(
+    new Set(activeMemberRows.map((m) => String(m.user_id).trim()))
+  );
+
+  if (
+    activeMemberRows.length !== 2 ||
+    distinctActiveIds.length !== 2 ||
+    !distinctActiveIds.includes(localUserId)
+  ) {
+    return {
+      valid: false,
+      reason:
+        'Unauthorized: Conversation must have exactly two active members including the authenticated user.',
+    };
+  }
+
+  const derivedPeerId = distinctActiveIds.find((id) => id !== localUserId);
+  if (!derivedPeerId || derivedPeerId === localUserId) {
+    return {
+      valid: false,
+      reason: 'Invalid 1-to-1 conversation membership on the server.',
+    };
+  }
+
+  if (expectedPeerId && expectedPeerId !== derivedPeerId) {
+    return {
+      valid: false,
+      reason: 'Peer identity mismatch against server conversation membership.',
+    };
+  }
+
+  return {
+    valid: true,
+    verifiedConversationId: conversation.id,
+    verifiedPeerUserId: derivedPeerId,
+  };
+}
+
+/**
+ * Generates a cryptographically unique signal identifier for replay protection.
+ */
+export function generateUniqueSignalId(): string {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.randomUUID) {
+    return `sig_${globalThis.crypto.randomUUID()}`;
+  }
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.getRandomValues) {
+    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+    return `sig_${bufferToBase64(bytes)}`;
+  }
+  throw new Error('Cryptographically secure random generator is unavailable.');
+}
+
+/**
+ * Deterministically serializes the entire voice call signal (including SDP, ICE candidate,
+ * mute status, reason, signalId, callId, conversationId, senderId, targetUserId, type, timestamp,
+ * senderEcdsaFingerprint, and keyRotationVersion) so that every field is bound to both the sender's
+ * dedicated ECDSA P-256 signature and directional AES-256-GCM ciphertext.
+ */
+export function serializeCanonicalCallSignal(
+  signal: Omit<VoiceCallSignalMessage, 'cryptoProof'>,
+  senderEcdsaFingerprint: string,
+  keyRotationVersion: number
+): string {
+  return JSON.stringify({
+    v: CALL_CRYPTO_PROOF_VERSION,
+    signalId: signal.signalId,
+    callId: signal.callId,
+    conversationId: signal.conversationId,
+    senderId: signal.senderId,
+    targetUserId: signal.targetUserId,
+    type: signal.type,
+    timestamp: signal.timestamp,
+    senderEcdsaFingerprint,
+    keyRotationVersion,
+    sdp: signal.sdp
+      ? {
+          type: signal.sdp.type ?? null,
+          sdp: signal.sdp.sdp ?? null,
+        }
+      : null,
+    candidate: signal.candidate
+      ? {
+          candidate: signal.candidate.candidate ?? null,
+          sdpMid: signal.candidate.sdpMid ?? null,
+          sdpMLineIndex: signal.candidate.sdpMLineIndex ?? null,
+          usernameFragment: signal.candidate.usernameFragment ?? null,
+        }
+      : null,
+    isMuted: typeof signal.isMuted === 'boolean' ? signal.isMuted : null,
+    reason: typeof signal.reason === 'string' ? signal.reason : null,
+  });
+}
+
+/**
+ * Creates a non-impersonable cryptographic proof for a voice call signal:
+ * 1. Signs the canonical payload (covering all metadata + SDP/ICE + key fingerprint/version)
+ *    with the sender's dedicated ECDSA P-256 private key (`extractable: false`).
+ * 2. Encrypts the canonical payload with the directional HKDF AES-256-GCM key (`senderId -> targetUserId`).
+ */
+export async function createSignedEncryptedSignal(
+  rawSignal: Omit<VoiceCallSignalMessage, 'cryptoProof'>,
+  cryptoBundle: CallCryptoSessionBundle | null
+): Promise<VoiceCallSignalMessage | null> {
+  if (!cryptoBundle) {
+    return null;
+  }
+  if (
+    !rawSignal.signalId ||
+    !rawSignal.callId ||
+    !rawSignal.conversationId ||
+    !rawSignal.senderId ||
+    !rawSignal.targetUserId ||
+    rawSignal.senderId === rawSignal.targetUserId ||
+    rawSignal.senderId !== cryptoBundle.localUserId ||
+    rawSignal.targetUserId !== cryptoBundle.peerUserId ||
+    rawSignal.conversationId !== cryptoBundle.conversationId ||
+    !cryptoBundle.localEcdsaFingerprint ||
+    cryptoBundle.localKeyRotationVersion < 1
+  ) {
+    return null;
+  }
+
+  try {
+    const canonical = serializeCanonicalCallSignal(
+      rawSignal,
+      cryptoBundle.localEcdsaFingerprint,
+      cryptoBundle.localKeyRotationVersion
+    );
+    const [signature, encrypted] = await Promise.all([
+      signCallSignalCanonical(canonical, cryptoBundle.localSigningPrivateKey),
+      encryptE2EEMessage(canonical, cryptoBundle.outboundAesKey),
+    ]);
+
+    if (!signature || !encrypted?.ciphertext || !encrypted?.iv) {
+      return null;
+    }
+
+    return {
+      ...rawSignal,
+      cryptoProof: {
+        ciphertext: encrypted.ciphertext,
+        iv: encrypted.iv,
+        signature,
+        version: CALL_CRYPTO_PROOF_VERSION,
+        senderEcdsaFingerprint: cryptoBundle.localEcdsaFingerprint,
+        keyRotationVersion: cryptoBundle.localKeyRotationVersion,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verifies an incoming voice call signal's pinned key fingerprint/version, timestamp freshness,
+ * directional AES-256-GCM encryption, canonical payload integrity, and dedicated ECDSA P-256 signature.
+ */
+export async function verifySignedEncryptedSignal(
+  signal: VoiceCallSignalMessage,
+  expectedConversationId: string,
+  expectedSenderId: string,
+  expectedTargetUserId: string,
+  cryptoBundle: CallCryptoSessionBundle | null,
+  nowMs: number = Date.now()
+): Promise<{ valid: boolean; reason?: string }> {
+  if (!signal || !signal.cryptoProof || !cryptoBundle) {
+    return { valid: false, reason: 'Missing signal cryptographic proof or key bundle.' };
+  }
+
+  const {
+    ciphertext,
+    iv,
+    signature,
+    version,
+    senderEcdsaFingerprint,
+    keyRotationVersion,
+  } = signal.cryptoProof;
+
+  if (
+    typeof ciphertext !== 'string' ||
+    !ciphertext ||
+    typeof iv !== 'string' ||
+    !iv ||
+    typeof signature !== 'string' ||
+    !signature ||
+    version !== CALL_CRYPTO_PROOF_VERSION ||
+    typeof senderEcdsaFingerprint !== 'string' ||
+    !senderEcdsaFingerprint ||
+    typeof keyRotationVersion !== 'number'
+  ) {
+    return { valid: false, reason: 'Incomplete or unsupported cryptographic proof fields.' };
+  }
+
+  if (
+    !signal.signalId ||
+    !signal.callId ||
+    signal.conversationId !== expectedConversationId ||
+    signal.senderId !== expectedSenderId ||
+    signal.targetUserId !== expectedTargetUserId ||
+    expectedSenderId === expectedTargetUserId ||
+    cryptoBundle.conversationId !== expectedConversationId ||
+    cryptoBundle.peerUserId !== expectedSenderId ||
+    cryptoBundle.localUserId !== expectedTargetUserId
+  ) {
+    return {
+      valid: false,
+      reason: 'Signal identity headers do not match server-verified participant bindings.',
+    };
+  }
+
+  // 1. Verify pinned sender ECDSA key fingerprint and rotation version (never trust mismatched keys)
+  if (
+    senderEcdsaFingerprint !== cryptoBundle.peerEcdsaFingerprint ||
+    keyRotationVersion !== cryptoBundle.peerKeyRotationVersion
+  ) {
+    return {
+      valid: false,
+      reason:
+        'Signal signing key fingerprint or rotation version does not match the pinned peer key.',
+    };
+  }
+
+  // 2. Validate timestamp freshness (±60 seconds)
+  const signalTime = new Date(signal.timestamp).getTime();
+  if (!Number.isFinite(signalTime)) {
+    return { valid: false, reason: 'Invalid signal timestamp format.' };
+  }
+  if (Math.abs(nowMs - signalTime) > SIGNAL_MAX_AGE_MS) {
+    return {
+      valid: false,
+      reason: 'Signal timestamp is outside the 60-second anti-replay window.',
+    };
+  }
+
+  // 3. Decrypt directional AES-256-GCM ciphertext (bound to expectedSenderId -> expectedTargetUserId)
+  const decryptedCanonical = await decryptE2EEMessage(
+    ciphertext,
+    iv,
+    cryptoBundle.inboundAesKey
+  );
+  if (!decryptedCanonical) {
+    return {
+      valid: false,
+      reason: 'Directional AES-256-GCM authentication tag verification failed.',
+    };
+  }
+
+  // 4. Recompute canonical representation of all outer signal fields (including SDP/ICE) and require exact match
+  const expectedCanonical = serializeCanonicalCallSignal(
+    signal,
+    cryptoBundle.peerEcdsaFingerprint,
+    cryptoBundle.peerKeyRotationVersion
+  );
+  if (decryptedCanonical !== expectedCanonical) {
+    return {
+      valid: false,
+      reason: 'Outer signal payload does not match authenticated encrypted canonical payload.',
+    };
+  }
+
+  // 5. Verify asymmetric ECDSA P-256 signature using the sender's pinned ECDSA verification public key
+  const signatureOk = await verifyCallSignalSignature(
+    expectedCanonical,
+    signature,
+    cryptoBundle.peerVerifyPublicKey
+  );
+  if (!signatureOk) {
+    return {
+      valid: false,
+      reason: 'ECDSA P-256 signature verification failed (sender impersonation or key mismatch).',
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Validates whether a signal type is permitted on a given channel ('inbox' vs 'room')
+ * and in the current call state machine.
+ */
+export function isSignalAllowedInCallState(params: {
+  channelKind: 'inbox' | 'room';
+  signal: VoiceCallSignalMessage;
+  currentStatus: VoiceCallStatus;
+  currentCallId: string | null;
+  isCaller: boolean;
+  rtcSignalingState?: RTCSignalingState | null;
+}): { allowed: boolean; reason?: string } {
+  const {
+    channelKind,
+    signal,
+    currentStatus,
+    currentCallId,
+    isCaller,
+    rtcSignalingState,
+  } = params;
+
+  if (channelKind === 'inbox') {
+    if (signal.type !== 'call-invite') {
+      return {
+        allowed: false,
+        reason: `Signal type '${signal.type}' is not allowed on the inbox channel.`,
+      };
+    }
+    return { allowed: true };
+  }
+
+  // Room channel never accepts call-invite
+  if (signal.type === 'call-invite') {
+    return {
+      allowed: false,
+      reason: 'call-invite is prohibited on the conversation room channel.',
+    };
+  }
+
+  if (currentStatus === 'idle' || currentStatus === 'ended' || !currentCallId) {
+    return {
+      allowed: false,
+      reason: 'Room signal rejected because there is no active call.',
+    };
+  }
+
+  if (signal.callId !== currentCallId) {
+    return {
+      allowed: false,
+      reason: 'Room signal callId does not match the active callId.',
+    };
+  }
+
+  switch (signal.type) {
+    case 'call-ringing':
+    case 'call-accept':
+    case 'call-reject':
+    case 'call-busy': {
+      if (!isCaller || currentStatus !== 'outgoing') {
+        return {
+          allowed: false,
+          reason: `Signal '${signal.type}' is only valid for the caller while in 'outgoing' state.`,
+        };
+      }
+      return { allowed: true };
+    }
+
+    case 'webrtc-offer': {
+      if (currentStatus !== 'connecting' && currentStatus !== 'connected') {
+        return {
+          allowed: false,
+          reason: `webrtc-offer is not allowed in call status '${currentStatus}'.`,
+        };
+      }
+      if (!signal.sdp || signal.sdp.type !== 'offer' || !signal.sdp.sdp) {
+        return {
+          allowed: false,
+          reason: 'Malformed SDP in webrtc-offer.',
+        };
+      }
+      return { allowed: true };
+    }
+
+    case 'webrtc-answer': {
+      if (currentStatus !== 'connecting' && currentStatus !== 'connected') {
+        return {
+          allowed: false,
+          reason: `webrtc-answer is not allowed in call status '${currentStatus}'.`,
+        };
+      }
+      if (!signal.sdp || signal.sdp.type !== 'answer' || !signal.sdp.sdp) {
+        return {
+          allowed: false,
+          reason: 'Malformed SDP in webrtc-answer.',
+        };
+      }
+      if (rtcSignalingState && rtcSignalingState !== 'have-local-offer') {
+        return {
+          allowed: false,
+          reason: `webrtc-answer rejected because RTCPeerConnection is in state '${rtcSignalingState}' instead of 'have-local-offer'.`,
+        };
+      }
+      return { allowed: true };
+    }
+
+    case 'webrtc-ice': {
+      if (currentStatus !== 'connecting' && currentStatus !== 'connected') {
+        return {
+          allowed: false,
+          reason: `webrtc-ice is not allowed in call status '${currentStatus}'.`,
+        };
+      }
+      if (!signal.candidate || typeof signal.candidate.candidate !== 'string') {
+        return {
+          allowed: false,
+          reason: 'Malformed ICE candidate payload.',
+        };
+      }
+      return { allowed: true };
+    }
+
+    case 'peer-mute': {
+      if (currentStatus !== 'connecting' && currentStatus !== 'connected') {
+        return {
+          allowed: false,
+          reason: `peer-mute is not allowed in call status '${currentStatus}'.`,
+        };
+      }
+      if (typeof signal.isMuted !== 'boolean') {
+        return {
+          allowed: false,
+          reason: 'Missing boolean isMuted field in peer-mute signal.',
+        };
+      }
+      return { allowed: true };
+    }
+
+    case 'call-end': {
+      return { allowed: true };
+    }
+
+    default:
+      return { allowed: false, reason: 'Unknown voice call signal type.' };
+  }
+}
+
+/**
+ * Stateful anti-replay tracker for signal IDs and AES-GCM IV nonces.
+ * Supports `checkOnly()` (pre-verification check so unauthenticated packets cannot pollute cache)
+ * and `checkAndRecord()` (atomic commit once cryptographic signature is verified).
+ */
+export class SignalReplayDetector {
+  private seenSignalIds = new Set<string>();
+  private seenIvs = new Set<string>();
+
+  public checkOnly(
+    signal: VoiceCallSignalMessage,
+    nowMs: number = Date.now()
+  ): { fresh: boolean; reason?: string } {
+    if (!signal || typeof signal.signalId !== 'string' || signal.signalId.trim().length < 8) {
+      return { fresh: false, reason: 'Missing or invalid signalId.' };
+    }
+    const iv = signal.cryptoProof?.iv;
+    if (!iv || typeof iv !== 'string' || iv.trim().length < 8) {
+      return { fresh: false, reason: 'Missing or invalid cryptographic IV.' };
+    }
+
+    const ts = new Date(signal.timestamp).getTime();
+    if (!Number.isFinite(ts) || Math.abs(nowMs - ts) > SIGNAL_MAX_AGE_MS) {
+      return {
+        fresh: false,
+        reason: 'Signal timestamp is expired or too far in the future.',
+      };
+    }
+
+    if (this.seenSignalIds.has(signal.signalId)) {
+      return {
+        fresh: false,
+        reason: `Duplicate signalId detected (${signal.signalId}).`,
+      };
+    }
+
+    if (this.seenIvs.has(iv)) {
+      return {
+        fresh: false,
+        reason: 'Duplicate AES-GCM IV nonce detected.',
+      };
+    }
+
+    return { fresh: true };
+  }
+
+  public checkAndRecord(
+    signal: VoiceCallSignalMessage,
+    nowMs: number = Date.now()
+  ): { fresh: boolean; reason?: string } {
+    const preCheck = this.checkOnly(signal, nowMs);
+    if (!preCheck.fresh) {
+      return preCheck;
+    }
+
+    const iv = signal.cryptoProof!.iv;
+
+    if (this.seenSignalIds.size >= MAX_REPLAY_CACHE_SIZE) {
+      const oldestId = this.seenSignalIds.values().next().value;
+      if (oldestId) this.seenSignalIds.delete(oldestId);
+    }
+    if (this.seenIvs.size >= MAX_REPLAY_CACHE_SIZE) {
+      const oldestIv = this.seenIvs.values().next().value;
+      if (oldestIv) this.seenIvs.delete(oldestIv);
+    }
+
+    this.seenSignalIds.add(signal.signalId);
+    this.seenIvs.add(iv);
+    return { fresh: true };
+  }
+
+  public clear(): void {
+    this.seenSignalIds.clear();
+    this.seenIvs.clear();
+  }
+}
+
 const INITIAL_CALL_STATE: VoiceCallState = {
   status: 'idle',
   callId: null,
@@ -45,13 +630,13 @@ const INITIAL_CALL_STATE: VoiceCallState = {
   connectedAt: null,
   statusDetail: null,
   errorMessage: null,
-  isPrivateChannel: false,
+  isPrivateChannel: true,
 };
 
 type CallStateListener = (state: VoiceCallState) => void;
 type RemoteStreamListener = (stream: MediaStream | null) => void;
 
-class OneToOneVoiceCallManager {
+export class OneToOneVoiceCallManager {
   private state: VoiceCallState = { ...INITIAL_CALL_STATE };
   private stateListeners = new Set<CallStateListener>();
   private remoteStreamListeners = new Set<RemoteStreamListener>();
@@ -64,7 +649,8 @@ class OneToOneVoiceCallManager {
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
-  private sharedCryptoKey: CryptoKey | null = null;
+  private activeCryptoBundle: CallCryptoSessionBundle | null = null;
+  private replayDetector = new SignalReplayDetector();
 
   private ringInterval: ReturnType<typeof setInterval> | null = null;
   private inviteResendInterval: ReturnType<typeof setInterval> | null = null;
@@ -132,12 +718,12 @@ class OneToOneVoiceCallManager {
   }
 
   /**
-   * Authenticates the Supabase Realtime client with the current server-verified JWT access token
-   * and returns the verified authenticated user ID.
+   * Authenticates the Supabase Realtime client strictly using the server-verified JWT session.
+   * Fails closed (returns null) if there is no valid access_token or server-verified user ID.
    */
   private async getVerifiedSessionUser(): Promise<{
     userId: string;
-    accessToken: string | null;
+    accessToken: string;
   } | null> {
     if (!isSupabaseConfigured()) return null;
     const supabase = getSupabase();
@@ -145,54 +731,52 @@ class OneToOneVoiceCallManager {
 
     try {
       await ensureSupabaseAuthSession();
-      const { data: sessionData } = await supabase.auth.getSession();
+      const [{ data: sessionData, error: sessionErr }, { data: userData, error: userErr }] =
+        await Promise.all([supabase.auth.getSession(), supabase.auth.getUser()]);
+
       const session = sessionData?.session;
+      const verifiedUser = userData?.user;
 
-      if (session?.access_token) {
-        try {
-          await supabase.realtime.setAuth(session.access_token);
-        } catch {}
+      if (
+        sessionErr ||
+        userErr ||
+        !session?.access_token ||
+        !verifiedUser?.id ||
+        session.user?.id !== verifiedUser.id
+      ) {
+        return null;
       }
 
-      if (session?.user?.id) {
-        return {
-          userId: session.user.id,
-          accessToken: session.access_token || null,
-        };
-      }
+      await supabase.realtime.setAuth(session.access_token);
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (userData?.user?.id) {
-        return {
-          userId: userData.user.id,
-          accessToken: session?.access_token || null,
-        };
-      }
+      return {
+        userId: verifiedUser.id,
+        accessToken: session.access_token,
+      };
     } catch (e) {
-      console.warn('[VoiceCall] Auth verification notice:', e);
+      console.warn('[VoiceCall] Server session verification failed:', e);
+      return null;
     }
-
-    return this.verifiedUserId
-      ? { userId: this.verifiedUserId, accessToken: null }
-      : null;
   }
 
   /**
-   * Server-side conversation membership and identity verification.
-   * Never trusts senderId, conversationId, or user profile metadata supplied only by the client.
-   * Queries Supabase `conversations`, `conversation_members`, and `profiles` under RLS.
+   * Server-side conversation membership, identity, and pinned dual-key cryptographic verification.
+   * Never trusts senderId, targetUserId, or conversation membership supplied by the client,
+   * and NEVER silently trusts a changed peer signing key.
    */
   private async verifyServerSideOneToOneAuthorization(
     conversationId: string,
-    peerUserId: string
+    expectedPeerId?: string
   ): Promise<{
     authorized: boolean;
+    verifiedConversationId?: string;
     verifiedLocalUserId?: string;
     verifiedPeerProfile?: PublicUserProfile;
+    cryptoBundle?: CallCryptoSessionBundle;
     reason?: string;
   }> {
-    if (!conversationId || !peerUserId) {
-      return { authorized: false, reason: 'Missing conversation or peer identifier.' };
+    if (!conversationId) {
+      return { authorized: false, reason: 'Missing conversation identifier.' };
     }
 
     const supabase = getSupabase();
@@ -201,44 +785,27 @@ class OneToOneVoiceCallManager {
     }
 
     const verifiedSession = await this.getVerifiedSessionUser();
-    const localUserId = verifiedSession?.userId || this.verifiedUserId;
-    if (!localUserId) {
+    if (!verifiedSession) {
       return {
         authorized: false,
-        reason: 'You must be signed in with a verified session to place or receive calls.',
+        reason: 'Authenticated Supabase session required for private call authorization.',
       };
     }
 
-    if (localUserId === peerUserId) {
-      return { authorized: false, reason: 'Cannot start a voice call with yourself.' };
-    }
+    const localUserId = verifiedSession.userId;
 
     try {
-      // 1. Verify the conversation record on the server (must exist and NOT be a group in Phase 1)
+      // 1. Verify conversation row on the server (must exist, be 1-to-1, and not be deleted)
       const { data: convRow, error: convErr } = await supabase
         .from('conversations')
         .select('id, is_group, deleted_at')
         .eq('id', conversationId)
         .maybeSingle();
 
-      if (convErr) {
+      if (convErr || !convRow) {
         return {
           authorized: false,
-          reason: 'Unable to verify conversation authorization with Supabase.',
-        };
-      }
-
-      if (convRow?.is_group) {
-        return {
-          authorized: false,
-          reason: 'Phase 1 supports one-to-one voice calls only. Group calling is disabled.',
-        };
-      }
-
-      if (convRow?.deleted_at) {
-        return {
-          authorized: false,
-          reason: 'This conversation is no longer active.',
+          reason: 'Conversation does not exist or access was denied by server RLS.',
         };
       }
 
@@ -246,52 +813,47 @@ class OneToOneVoiceCallManager {
       const { data: memberRows, error: memberErr } = await supabase
         .from('conversation_members')
         .select('user_id, deleted_at')
-        .eq('conversation_id', conversationId);
+        .eq('conversation_id', convRow.id);
 
-      let bothMembersVerified = false;
-      if (!memberErr && Array.isArray(memberRows) && memberRows.length > 0) {
-        const activeMemberIds = new Set(
-          memberRows.filter((r: any) => !r.deleted_at).map((r: any) => String(r.user_id))
-        );
-        if (activeMemberIds.has(localUserId) && activeMemberIds.has(peerUserId)) {
-          bothMembersVerified = true;
-        }
-      }
-
-      // Fallback check in public.messages if conversation_members rows were legacy
-      if (!bothMembersVerified) {
-        const { data: msgRows } = await supabase
-          .from('messages')
-          .select('id')
-          .eq('conversation_id', conversationId)
-          .or(
-            `and(sender_id.eq.${localUserId},receiver_id.eq.${peerUserId}),and(sender_id.eq.${peerUserId},receiver_id.eq.${localUserId})`
-          )
-          .limit(1);
-
-        if (Array.isArray(msgRows) && msgRows.length > 0) {
-          bothMembersVerified = true;
-        }
-      }
-
-      if (!bothMembersVerified) {
+      if (memberErr || !Array.isArray(memberRows)) {
         return {
           authorized: false,
-          reason: 'Conversation membership verification failed on the server.',
+          reason: 'Failed to verify conversation membership on the server.',
         };
       }
 
-      // 3. Fetch peer profile directly from public.profiles on the server (never trust client-sent names/avatars)
+      const membershipCheck = validateOneToOneConversationMembership({
+        conversation: convRow,
+        members: memberRows,
+        localUserId,
+        expectedPeerId,
+      });
+
+      if (
+        !membershipCheck.valid ||
+        !membershipCheck.verifiedConversationId ||
+        !membershipCheck.verifiedPeerUserId
+      ) {
+        return {
+          authorized: false,
+          reason: membershipCheck.reason || 'Unauthorized conversation membership.',
+        };
+      }
+
+      const verifiedConvId = membershipCheck.verifiedConversationId;
+      const serverDerivedPeerId = membershipCheck.verifiedPeerUserId;
+
+      // 3. Fetch peer profile directly from public.profiles on the server
       const { data: peerProfileRow, error: profErr } = await supabase
         .from('profiles')
         .select('id, username, display_name, avatar_url, streak_days')
-        .eq('id', peerUserId)
+        .eq('id', serverDerivedPeerId)
         .maybeSingle();
 
       if (profErr || !peerProfileRow || !peerProfileRow.username) {
         return {
           authorized: false,
-          reason: 'Could not verify caller identity in Supabase profiles.',
+          reason: 'Could not verify peer profile in Supabase.',
         };
       }
 
@@ -307,27 +869,76 @@ class OneToOneVoiceCallManager {
         streak_days: Number(peerProfileRow.streak_days) || 1,
       };
 
-      // 4. Derive optional ECDH shared key from public.user_crypto_keys (RLS: auth.uid() = user_id)
+      // 4. Verify & pin separated ECDH + ECDSA keys (rejects unapproved key changes or downgrades)
+      let cryptoBundle: CallCryptoSessionBundle;
       try {
-        const [{ privateKey }, peerPublicKey] = await Promise.all([
-          getOrCreateDeviceIdentityKeyPair(localUserId),
-          fetchRecipientPublicKey(peerUserId),
-        ]);
-        if (privateKey && peerPublicKey) {
-          this.sharedCryptoKey = await deriveConversationKey(
-            privateKey,
-            peerPublicKey,
-            conversationId
-          );
+        const localKeys = await getOrCreateDeviceIdentityKeyPair(localUserId);
+        await syncPublicKeyToSupabase(localUserId, localKeys.publishedBundle);
+
+        const peerKeyVerification = await fetchAndVerifyPeerKeyBundle(
+          localUserId,
+          serverDerivedPeerId
+        );
+        if (
+          !peerKeyVerification.trusted ||
+          !peerKeyVerification.ecdhPublicKey ||
+          !peerKeyVerification.ecdsaVerifyPublicKey ||
+          !peerKeyVerification.ecdsaFingerprint ||
+          typeof peerKeyVerification.keyRotationVersion !== 'number'
+        ) {
+          return {
+            authorized: false,
+            reason:
+              peerKeyVerification.reason ||
+              'Peer cryptographic key bundle failed verification or pinning check.',
+          };
         }
-      } catch {
-        this.sharedCryptoKey = null;
+
+        const [outboundAesKey, inboundAesKey] = await Promise.all([
+          deriveDirectionalCallSignalKey(
+            localKeys.privateKey,
+            peerKeyVerification.ecdhPublicKey,
+            verifiedConvId,
+            localUserId,
+            serverDerivedPeerId
+          ),
+          deriveDirectionalCallSignalKey(
+            localKeys.privateKey,
+            peerKeyVerification.ecdhPublicKey,
+            verifiedConvId,
+            serverDerivedPeerId,
+            localUserId
+          ),
+        ]);
+
+        cryptoBundle = {
+          localUserId,
+          peerUserId: serverDerivedPeerId,
+          conversationId: verifiedConvId,
+          outboundAesKey,
+          inboundAesKey,
+          localSigningPrivateKey: localKeys.signingPrivateKey,
+          peerVerifyPublicKey: peerKeyVerification.ecdsaVerifyPublicKey,
+          localEcdsaFingerprint: localKeys.ecdsaFingerprint,
+          peerEcdsaFingerprint: peerKeyVerification.ecdsaFingerprint,
+          localKeyRotationVersion: localKeys.keyRotationVersion,
+          peerKeyRotationVersion: peerKeyVerification.keyRotationVersion,
+        };
+      } catch (cryptoErr: any) {
+        return {
+          authorized: false,
+          reason:
+            cryptoErr?.message ||
+            'Failed to verify cryptographic identity & signing keys for call signaling.',
+        };
       }
 
       return {
         authorized: true,
+        verifiedConversationId: verifiedConvId,
         verifiedLocalUserId: localUserId,
         verifiedPeerProfile,
+        cryptoBundle,
       };
     } catch (err: any) {
       return {
@@ -338,160 +949,136 @@ class OneToOneVoiceCallManager {
   }
 
   /**
-   * Generates an authenticated AES-256-GCM cryptographic proof binding the signal header
-   * using the ECDH conversation key (if both peers have published public keys in user_crypto_keys).
+   * Subscribes to a strictly private Supabase Realtime channel (`private: true` ONLY).
+   * Completely removes any fallback to public or non-private channels and fails closed on authorization failure.
    */
-  private async attachCryptoProof(
-    signal: Omit<VoiceCallSignalMessage, 'cryptoProof'>
-  ): Promise<VoiceCallSignalMessage> {
-    if (!this.sharedCryptoKey) {
-      return signal;
-    }
-    try {
-      const canonical = JSON.stringify({
-        callId: signal.callId,
-        conversationId: signal.conversationId,
-        senderId: signal.senderId,
-        targetUserId: signal.targetUserId,
-        type: signal.type,
-      });
-      const encrypted = await encryptE2EEMessage(canonical, this.sharedCryptoKey);
-      return {
-        ...signal,
-        cryptoProof: {
-          ciphertext: encrypted.ciphertext,
-          iv: encrypted.iv,
-        },
-      };
-    } catch {
-      return signal;
-    }
-  }
-
-  /**
-   * Verifies the cryptographic proof attached to an incoming signal when a shared ECDH key exists.
-   */
-  private async verifySignalCryptoProof(signal: VoiceCallSignalMessage): Promise<boolean> {
-    if (!signal.cryptoProof || !this.sharedCryptoKey) {
-      return true;
-    }
-    try {
-      const decrypted = await decryptE2EEMessage(
-        signal.cryptoProof.ciphertext,
-        signal.cryptoProof.iv,
-        this.sharedCryptoKey
-      );
-      if (!decrypted) return false;
-      const parsed = JSON.parse(decrypted);
-      return (
-        parsed.callId === signal.callId &&
-        parsed.conversationId === signal.conversationId &&
-        parsed.senderId === signal.senderId &&
-        parsed.targetUserId === signal.targetUserId &&
-        parsed.type === signal.type
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Helper to subscribe a Supabase Realtime channel with `private: true` first,
-   * falling back cleanly if the database has not yet run the `realtime.messages` RLS policy.
-   */
-  private async subscribeAuthenticatedChannel(
+  public async subscribePrivateChannel(
     topic: string,
     onSignal: (msg: VoiceCallSignalMessage) => void
-  ): Promise<{ channel: RealtimeChannel; isPrivate: boolean } | null> {
+  ): Promise<RealtimeChannel | null> {
     const supabase = getSupabase();
     if (!supabase) return null;
 
-    await this.getVerifiedSessionUser();
+    const verifiedSession = await this.getVerifiedSessionUser();
+    if (!verifiedSession) {
+      return null;
+    }
 
-    const trySubscribe = (usePrivate: boolean): Promise<RealtimeChannel | null> => {
-      return new Promise((resolve) => {
-        let settled = false;
-        const ch = supabase.channel(topic, {
-          config: {
-            private: usePrivate,
-            broadcast: { self: false, ack: true },
-          },
-        });
-
-        const timer = setTimeout(() => {
-          if (!settled) {
-            settled = true;
-            try {
-              ch.unsubscribe();
-              supabase.removeChannel(ch);
-            } catch {}
-            resolve(null);
-          }
-        }, 4500);
-
-        ch.on('broadcast', { event: 'voice_call_signal' }, (payload) => {
-          const msg = payload?.payload as VoiceCallSignalMessage | undefined;
-          if (msg && msg.type && msg.senderId && msg.conversationId) {
-            onSignal(msg);
-          }
-        }).subscribe((status: string) => {
-          if (settled) return;
-          if (status === 'SUBSCRIBED') {
-            settled = true;
-            clearTimeout(timer);
-            resolve(ch);
-          } else if (
-            status === 'CHANNEL_ERROR' ||
-            status === 'TIMED_OUT' ||
-            status === 'CLOSED'
-          ) {
-            settled = true;
-            clearTimeout(timer);
-            try {
-              ch.unsubscribe();
-              supabase.removeChannel(ch);
-            } catch {}
-            resolve(null);
-          }
-        });
+    return new Promise((resolve) => {
+      let settled = false;
+      const ch = supabase.channel(topic, {
+        config: {
+          private: true,
+          broadcast: { self: false, ack: true },
+        },
       });
-    };
 
-    // 1. Try authenticated private channel first (enforces realtime.messages RLS when configured)
-    const privateCh = await trySubscribe(true);
-    if (privateCh) {
-      return { channel: privateCh, isPrivate: true };
-    }
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          try {
+            ch.unsubscribe();
+            supabase.removeChannel(ch);
+          } catch {}
+          resolve(null);
+        }
+      }, 5000);
 
-    // 2. Fallback to authenticated channel if realtime.messages RLS SQL was not yet run
-    const fallbackCh = await trySubscribe(false);
-    if (fallbackCh) {
-      return { channel: fallbackCh, isPrivate: false };
-    }
-
-    return null;
+      ch.on('broadcast', { event: 'voice_call_signal' }, (payload) => {
+        const msg = payload?.payload as VoiceCallSignalMessage | undefined;
+        if (
+          msg &&
+          typeof msg.signalId === 'string' &&
+          typeof msg.type === 'string' &&
+          typeof msg.callId === 'string' &&
+          typeof msg.conversationId === 'string' &&
+          typeof msg.senderId === 'string' &&
+          typeof msg.targetUserId === 'string' &&
+          msg.cryptoProof &&
+          typeof msg.cryptoProof.ciphertext === 'string' &&
+          typeof msg.cryptoProof.iv === 'string' &&
+          typeof msg.cryptoProof.signature === 'string' &&
+          typeof msg.cryptoProof.senderEcdsaFingerprint === 'string' &&
+          typeof msg.cryptoProof.keyRotationVersion === 'number'
+        ) {
+          onSignal(msg);
+        }
+      }).subscribe((status: string, err?: Error) => {
+        if (settled) return;
+        if (status === 'SUBSCRIBED') {
+          settled = true;
+          clearTimeout(timer);
+          resolve(ch);
+        } else if (
+          status === 'CHANNEL_ERROR' ||
+          status === 'TIMED_OUT' ||
+          status === 'CLOSED'
+        ) {
+          settled = true;
+          clearTimeout(timer);
+          if (err) {
+            console.warn(
+              `[VoiceCall] Private channel (${topic}) authorization denied:`,
+              err.message
+            );
+          }
+          try {
+            ch.unsubscribe();
+            supabase.removeChannel(ch);
+          } catch {}
+          resolve(null);
+        }
+      });
+    });
   }
 
   /**
-   * Initializes the signed-in user's global incoming call inbox listener (`spark_call_inbox_<userId>`).
+   * Initializes the signed-in user's private incoming call inbox listener (`spark_call_inbox_<auth.uid()>`).
+   * Only subscribes to the server-authenticated user's own inbox and fails closed if authorization fails.
    */
-  public async initIncomingCallListener(userId: string): Promise<void> {
-    if (!userId || !isSupabaseConfigured()) return;
-    if (this.verifiedUserId === userId && this.inboxChannel) return;
+  public async initIncomingCallListener(expectedUserId?: string): Promise<void> {
+    if (!isSupabaseConfigured()) return;
+
+    const verifiedSession = await this.getVerifiedSessionUser();
+    if (!verifiedSession) {
+      this.cleanupInboxChannel();
+      return;
+    }
+
+    if (expectedUserId && expectedUserId !== verifiedSession.userId) {
+      console.warn('[VoiceCall] Blocked inbox subscription for mismatched user ID.');
+      this.cleanupInboxChannel();
+      return;
+    }
+
+    if (this.verifiedUserId === verifiedSession.userId && this.inboxChannel) {
+      return;
+    }
 
     this.cleanupInboxChannel();
-    this.verifiedUserId = userId;
+    this.verifiedUserId = verifiedSession.userId;
 
-    const inboxTopic = `spark_call_inbox_${userId}`;
-    const result = await this.subscribeAuthenticatedChannel(inboxTopic, (msg) => {
-      this.handleIncomingSignal(msg).catch((e) =>
+    // Ensure local user's separated ECDH + ECDSA public key bundle is synced to user_crypto_keys
+    try {
+      const localKeys = await getOrCreateDeviceIdentityKeyPair(verifiedSession.userId);
+      await syncPublicKeyToSupabase(verifiedSession.userId, localKeys.publishedBundle);
+    } catch {}
+
+    const inboxTopic = `spark_call_inbox_${verifiedSession.userId}`;
+    const privateInboxChannel = await this.subscribePrivateChannel(inboxTopic, (msg) => {
+      this.handleIncomingInboxSignal(msg).catch((e) =>
         console.warn('[VoiceCall] Error handling inbox signal:', e)
       );
     });
 
-    if (result) {
-      this.inboxChannel = result.channel;
+    if (!privateInboxChannel) {
+      console.warn(
+        '[VoiceCall] Private call inbox subscription failed closed. Ensure Section 13 SQL (realtime.messages RLS) is applied in Supabase.'
+      );
+      return;
     }
+
+    this.inboxChannel = privateInboxChannel;
   }
 
   public cleanupInboxChannel(): void {
@@ -507,53 +1094,134 @@ class OneToOneVoiceCallManager {
 
   private async sendSignalOnChannel(
     channel: RealtimeChannel | null,
-    rawSignal: Omit<VoiceCallSignalMessage, 'cryptoProof'>
-  ): Promise<void> {
-    if (!channel) return;
-    const signedSignal = await this.attachCryptoProof(rawSignal);
+    rawSignal: Omit<VoiceCallSignalMessage, 'signalId' | 'cryptoProof'> & {
+      signalId?: string;
+    },
+    cryptoBundle: CallCryptoSessionBundle | null = this.activeCryptoBundle
+  ): Promise<boolean> {
+    if (!channel || !cryptoBundle) return false;
+
+    const signalWithId: Omit<VoiceCallSignalMessage, 'cryptoProof'> = {
+      ...rawSignal,
+      signalId: rawSignal.signalId || generateUniqueSignalId(),
+    };
+
+    const signedSignal = await createSignedEncryptedSignal(signalWithId, cryptoBundle);
+    if (!signedSignal) {
+      console.warn('[VoiceCall] Refusing to send signal without cryptographic proof.');
+      return false;
+    }
     try {
-      await channel.send({
+      const resp = await channel.send({
         type: 'broadcast',
         event: 'voice_call_signal',
         payload: signedSignal,
       });
+      return resp === 'ok';
     } catch (e) {
-      console.warn('[VoiceCall] Signal send notice:', e);
+      console.warn('[VoiceCall] Private signal send failed:', e);
+      return false;
     }
   }
 
   /**
-   * Sends a one-shot invite packet to the target user's inbox channel (`spark_call_inbox_<targetUserId>`).
+   * Publishes a write-only private call invitation to the verified peer's inbox (`spark_call_inbox_<serverVerifiedPeerId>`).
+   *
+   * IMPORTANT: A `true` return value (`resp === 'ok'` from Supabase Realtime `ack: true`) ONLY confirms that
+   * the Supabase Realtime broker authorized and accepted the broadcast on the channel. It is NOT proof that
+   * the recipient device is online or received the invitation. Recipient delivery is only confirmed when
+   * a cryptographically signed `call-ringing` (or `call-accept`/`call-reject`/`call-busy`) signal is received
+   * back from the recipient on the private conversation room channel.
    */
-  private async sendInviteToPeerInbox(
-    targetUserId: string,
-    rawSignal: Omit<VoiceCallSignalMessage, 'cryptoProof'>
-  ): Promise<void> {
+  private async publishInviteToPeerInboxChannel(
+    serverVerifiedPeerId: string,
+    rawSignal: Omit<VoiceCallSignalMessage, 'signalId' | 'cryptoProof'> & {
+      signalId?: string;
+    },
+    cryptoBundle: CallCryptoSessionBundle
+  ): Promise<boolean> {
     const supabase = getSupabase();
-    if (!supabase) return;
+    if (!supabase) return false;
 
-    const inboxTopic = `spark_call_inbox_${targetUserId}`;
-    const sub = await this.subscribeAuthenticatedChannel(inboxTopic, () => {});
-    if (!sub) return;
-
-    try {
-      await this.sendSignalOnChannel(sub.channel, rawSignal);
-    } finally {
-      setTimeout(() => {
-        try {
-          sub.channel.unsubscribe();
-          supabase.removeChannel(sub.channel);
-        } catch {}
-      }, 400);
+    const verifiedSession = await this.getVerifiedSessionUser();
+    if (!verifiedSession || verifiedSession.userId === serverVerifiedPeerId) {
+      return false;
     }
+
+    const signalWithId: Omit<VoiceCallSignalMessage, 'cryptoProof'> = {
+      ...rawSignal,
+      signalId: rawSignal.signalId || generateUniqueSignalId(),
+    };
+
+    const signedSignal = await createSignedEncryptedSignal(signalWithId, cryptoBundle);
+    if (!signedSignal) return false;
+
+    const inboxTopic = `spark_call_inbox_${serverVerifiedPeerId}`;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const writeOnlyChannel = supabase.channel(inboxTopic, {
+        config: {
+          private: true,
+          broadcast: { self: false, ack: true },
+        },
+      });
+
+      const cleanup = () => {
+        setTimeout(() => {
+          try {
+            writeOnlyChannel.unsubscribe();
+            supabase.removeChannel(writeOnlyChannel);
+          } catch {}
+        }, 300);
+      };
+
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          resolve(false);
+        }
+      }, 4500);
+
+      writeOnlyChannel.subscribe(async (status: string) => {
+        if (settled) return;
+        if (status === 'SUBSCRIBED') {
+          settled = true;
+          clearTimeout(timer);
+          try {
+            const resp = await writeOnlyChannel.send({
+              type: 'broadcast',
+              event: 'voice_call_signal',
+              payload: signedSignal,
+            });
+            cleanup();
+            resolve(resp === 'ok');
+          } catch {
+            cleanup();
+            resolve(false);
+          }
+        } else if (
+          status === 'CHANNEL_ERROR' ||
+          status === 'TIMED_OUT' ||
+          status === 'CLOSED'
+        ) {
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          resolve(false);
+        }
+      });
+    });
   }
 
   /**
-   * Starts a 1-to-1 outgoing voice call to `targetUserId` in `conversationId`.
+   * Starts a 1-to-1 outgoing voice call in `conversationId`.
+   * Authorizes conversation membership on the server and fails closed if private Realtime channel authorization fails.
    */
   public async startOneToOneVoiceCall(
     conversationId: string,
-    targetUserId: string
+    expectedTargetUserId?: string
   ): Promise<{ success: boolean; error?: string }> {
     unlockSound();
 
@@ -574,27 +1242,36 @@ class OneToOneVoiceCallManager {
     }
 
     const sessionInfo = await this.getVerifiedSessionUser();
-    const callerId = sessionInfo?.userId || this.verifiedUserId;
-    if (!callerId) {
+    if (!sessionInfo) {
       return {
         success: false,
-        error: 'Authentication required. Please sign in again.',
+        error: 'Authenticated Supabase session required. Please sign in again.',
       };
     }
 
-    // Ensure the 1-to-1 conversation record and membership exist on the server before calling
-    let resolvedConvId = conversationId;
-    try {
-      resolvedConvId = await getOrCreateRealConversation(callerId, targetUserId);
-    } catch {}
+    let candidateConvId = conversationId;
+    if (expectedTargetUserId && expectedTargetUserId !== sessionInfo.userId) {
+      try {
+        candidateConvId = await getOrCreateRealConversation(
+          sessionInfo.userId,
+          expectedTargetUserId
+        );
+      } catch {}
+    }
 
-    // 1. Server-side conversation membership & identity check
+    // 1. Strict server-side conversation membership, peer derivation, and pinned key bundle verification
     const authCheck = await this.verifyServerSideOneToOneAuthorization(
-      resolvedConvId,
-      targetUserId
+      candidateConvId,
+      expectedTargetUserId
     );
-    if (!authCheck.authorized || !authCheck.verifiedPeerProfile) {
-      const errMsg = authCheck.reason || 'Call authorization failed.';
+    if (
+      !authCheck.authorized ||
+      !authCheck.verifiedConversationId ||
+      !authCheck.verifiedLocalUserId ||
+      !authCheck.verifiedPeerProfile ||
+      !authCheck.cryptoBundle
+    ) {
+      const errMsg = authCheck.reason || 'Server call authorization failed.';
       this.updateState({
         ...INITIAL_CALL_STATE,
         status: 'ended',
@@ -604,7 +1281,39 @@ class OneToOneVoiceCallManager {
       return { success: false, error: errMsg };
     }
 
-    // 2. Request microphone access before ringing the remote user
+    const verifiedConvId = authCheck.verifiedConversationId;
+    const verifiedCallerId = authCheck.verifiedLocalUserId;
+    const verifiedPeer = authCheck.verifiedPeerProfile;
+    this.activeCryptoBundle = authCheck.cryptoBundle;
+
+    // 2. Subscribe to the private 1-to-1 conversation call room FIRST (fail closed before opening microphone if unauthorized)
+    const roomTopic = `spark_call_1on1_${verifiedConvId}`;
+    const privateRoomChannel = await this.subscribePrivateChannel(roomTopic, (msg) => {
+      this.handleIncomingRoomSignal(
+        msg,
+        verifiedConvId,
+        verifiedPeer.id,
+        verifiedCallerId
+      ).catch((e) => console.warn('[VoiceCall] Room signal error:', e));
+    });
+
+    if (!privateRoomChannel) {
+      this.releaseMediaAndConnections();
+      const errMsg =
+        'Private Realtime channel authorization failed (fail-closed). Ensure Section 13 SQL policies on realtime.messages are applied in Supabase.';
+      this.updateState({
+        ...INITIAL_CALL_STATE,
+        status: 'ended',
+        peerUser: verifiedPeer,
+        errorMessage: errMsg,
+        statusDetail: 'Private channel denied',
+      });
+      return { success: false, error: errMsg };
+    }
+
+    this.callRoomChannel = privateRoomChannel;
+
+    // 3. Request microphone access
     let micStream: MediaStream;
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
@@ -616,6 +1325,7 @@ class OneToOneVoiceCallManager {
         video: false,
       });
     } catch (micErr: any) {
+      this.releaseMediaAndConnections();
       const msg =
         micErr?.name === 'NotAllowedError' || micErr?.name === 'PermissionDeniedError'
           ? 'Microphone permission was denied. Please allow microphone access in Chrome site settings to make voice calls.'
@@ -623,7 +1333,7 @@ class OneToOneVoiceCallManager {
       this.updateState({
         ...INITIAL_CALL_STATE,
         status: 'ended',
-         peerUser: authCheck.verifiedPeerProfile,
+        peerUser: verifiedPeer,
         errorMessage: msg,
         statusDetail: 'Microphone unavailable',
       });
@@ -631,79 +1341,89 @@ class OneToOneVoiceCallManager {
     }
 
     this.localStream = micStream;
-    const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
+    // Note: isPeerRinging is false until the recipient's device sends a verified 'call-ringing' signal.
     this.updateState({
       status: 'outgoing',
       callId,
-      conversationId: resolvedConvId,
+      conversationId: verifiedConvId,
       isCaller: true,
-      peerUser: authCheck.verifiedPeerProfile,
+      peerUser: verifiedPeer,
       isMuted: false,
       isSpeakerOn: false,
       isPeerMuted: false,
       isPeerRinging: false,
       connectedAt: null,
-      statusDetail: 'Calling...',
+      statusDetail: 'Calling (waiting for recipient device)...',
       errorMessage: null,
-      isPrivateChannel: false,
+      isPrivateChannel: true,
     });
 
-    // 3. Join the per-conversation 1-to-1 call room channel
-    const roomTopic = `spark_call_1on1_${resolvedConvId}`;
-    const roomSub = await this.subscribeAuthenticatedChannel(roomTopic, (msg) => {
-      this.handleIncomingSignal(msg).catch((e) =>
-        console.warn('[VoiceCall] Room signal error:', e)
-      );
-    });
+    // 4. Publish cryptographically signed invite to the peer's private inbox (fail closed if Realtime broker rejects publish)
+    const inviteBase = {
+      callId,
+      conversationId: verifiedConvId,
+      senderId: verifiedCallerId,
+      targetUserId: verifiedPeer.id,
+      type: 'call-invite' as VoiceCallSignalType,
+      timestamp: new Date().toISOString(),
+    };
 
-    if (!roomSub) {
+    const brokerPublishAccepted = await this.publishInviteToPeerInboxChannel(
+      verifiedPeer.id,
+      inviteBase,
+      this.activeCryptoBundle
+    );
+
+    if (!brokerPublishAccepted) {
       this.releaseMediaAndConnections();
-      const errMsg = 'Could not connect to Supabase Realtime signaling channel.';
+      const errMsg =
+        'Private inbox call invitation was rejected by Realtime authorization (fail-closed).';
       this.updateState({
+        ...INITIAL_CALL_STATE,
         status: 'ended',
+        peerUser: verifiedPeer,
         errorMessage: errMsg,
-        statusDetail: 'Signaling failed',
+        statusDetail: 'Signaling denied',
       });
       return { success: false, error: errMsg };
     }
 
-    this.callRoomChannel = roomSub.channel;
-    this.updateState({ isPrivateChannel: roomSub.isPrivate });
-
-    // 4. Start outgoing ringback tone & broadcast call-invite
     this.startRingLoop('outgoing');
 
-    const invitePayload: Omit<VoiceCallSignalMessage, 'cryptoProof'> = {
-      callId,
-      conversationId: resolvedConvId,
-      senderId: callerId,
-      targetUserId,
-      type: 'call-invite',
-      timestamp: new Date().toISOString(),
-    };
-
-    await Promise.all([
-      this.sendSignalOnChannel(this.callRoomChannel, invitePayload),
-      this.sendInviteToPeerInbox(targetUserId, invitePayload),
-    ]);
-
-    // Repeat invite every 3.5s while ringing in case recipient just opened the app
+    // Periodically re-publish invite with a fresh unique signalId + timestamp + signature while outgoing
+    // in case the recipient comes online while the call is still ringing.
     this.inviteResendInterval = setInterval(() => {
-      if (this.state.status === 'outgoing' && this.state.callId === callId) {
-        const repeatInvite: Omit<VoiceCallSignalMessage, 'cryptoProof'> = {
-          ...invitePayload,
+      if (
+        this.state.status === 'outgoing' &&
+        this.state.callId === callId &&
+        this.activeCryptoBundle
+      ) {
+        const repeatInvite = {
+          ...inviteBase,
+          signalId: generateUniqueSignalId(),
           timestamp: new Date().toISOString(),
         };
-        this.sendSignalOnChannel(this.callRoomChannel, repeatInvite).catch(() => {});
-        this.sendInviteToPeerInbox(targetUserId, repeatInvite).catch(() => {});
+        this.publishInviteToPeerInboxChannel(
+          verifiedPeer.id,
+          repeatInvite,
+          this.activeCryptoBundle
+        ).catch(() => {});
       }
     }, 3500);
 
-    // 45-second unanswered timeout
+    // 45-second unanswered / offline recipient timeout
+    // Distinguishes between an offline recipient (never sent 'call-ringing') and a ringing unanswered recipient.
     this.unansweredTimeout = setTimeout(() => {
       if (this.state.status === 'outgoing' && this.state.callId === callId) {
-        this.endVoiceCall('No answer. The recipient may be offline or unavailable.');
+        if (!this.state.isPeerRinging) {
+          this.endVoiceCall(
+            'Recipient is offline or unreachable (no device acknowledged the call invitation).'
+          );
+        } else {
+          this.endVoiceCall('No answer. The recipient did not pick up.');
+        }
       }
     }, 45000);
 
@@ -711,206 +1431,331 @@ class OneToOneVoiceCallManager {
   }
 
   /**
-   * Handles incoming signaling messages from either `spark_call_inbox_<userId>` or `spark_call_1on1_<conversationId>`.
+   * Handles incoming `call-invite` signals arriving on the authenticated user's private inbox channel.
+   * Order of checks:
+   * 1. Channel & state validation (`isSignalAllowedInCallState`).
+   * 2. Replay pre-check (`replayDetector.checkOnly`).
+   * 3. Server-side conversation membership & pinned peer key verification.
+   * 4. Cryptographic ECDSA P-256 signature & directional AES-256-GCM verification (`verifySignedEncryptedSignal`).
+   * 5. Atomic replay commit (`replayDetector.checkAndRecord`).
+   * 6. Call state transition.
    */
-  private async handleIncomingSignal(msg: VoiceCallSignalMessage): Promise<void> {
-    const sessionInfo = await this.getVerifiedSessionUser();
-    const myUserId = sessionInfo?.userId || this.verifiedUserId;
-    if (!myUserId) return;
-
-    // Ignore signals sent by ourselves or targeted at another user
-    if (msg.senderId === myUserId) return;
-    if (msg.targetUserId && msg.targetUserId !== myUserId) return;
-
-    // Case 1: New incoming call invite
-    if (msg.type === 'call-invite') {
-      // Ignore duplicate invite for the exact same call we're already handling
-      if (
-        this.state.callId === msg.callId &&
-        (this.state.status === 'incoming' ||
-          this.state.status === 'connecting' ||
-          this.state.status === 'connected')
-      ) {
-        return;
-      }
-
-      // If already in another call, notify caller that we are busy
-      if (this.state.status !== 'idle' && this.state.status !== 'ended') {
-        const roomSub = await this.subscribeAuthenticatedChannel(
-          `spark_call_1on1_${msg.conversationId}`,
-          () => {}
-        );
-        if (roomSub) {
-          await this.sendSignalOnChannel(roomSub.channel, {
-            callId: msg.callId,
-            conversationId: msg.conversationId,
-            senderId: myUserId,
-            targetUserId: msg.senderId,
-            type: 'call-busy',
-            timestamp: new Date().toISOString(),
-          });
-          setTimeout(() => {
-            try {
-              roomSub.channel.unsubscribe();
-              getSupabase()?.removeChannel(roomSub.channel);
-            } catch {}
-          }, 400);
-        }
-        return;
-      }
-
-      // Server-side verification of conversation membership & caller profile
-      const authCheck = await this.verifyServerSideOneToOneAuthorization(
-        msg.conversationId,
-        msg.senderId
-      );
-      if (!authCheck.authorized || !authCheck.verifiedPeerProfile) {
-        console.warn(
-          '[VoiceCall] Rejected unauthorized incoming call signal:',
-          authCheck.reason
-        );
-        return;
-      }
-
-      // Verify cryptographic proof if present
-      const proofValid = await this.verifySignalCryptoProof(msg);
-      if (!proofValid) {
-        console.warn('[VoiceCall] Rejected incoming call signal with invalid crypto proof.');
-        return;
-      }
-
-      // Subscribe to the conversation's 1-to-1 call room channel
-      const roomTopic = `spark_call_1on1_${msg.conversationId}`;
-      const roomSub = await this.subscribeAuthenticatedChannel(roomTopic, (roomMsg) => {
-        this.handleIncomingSignal(roomMsg).catch((e) =>
-          console.warn('[VoiceCall] Room signal error:', e)
-        );
-      });
-
-      if (!roomSub) return;
-
-      this.callRoomChannel = roomSub.channel;
-      this.pendingIceCandidates = [];
-
-      this.updateState({
-        status: 'incoming',
-        callId: msg.callId,
-        conversationId: msg.conversationId,
-        isCaller: false,
-        peerUser: authCheck.verifiedPeerProfile,
-        isMuted: false,
-        isSpeakerOn: false,
-        isPeerMuted: false,
-        isPeerRinging: true,
-        connectedAt: null,
-        statusDetail: 'Incoming Voice Call...',
-        errorMessage: null,
-        isPrivateChannel: roomSub.isPrivate,
-      });
-
-      this.startRingLoop('incoming');
-
-      // Acknowledge ringing to caller
-      await this.sendSignalOnChannel(this.callRoomChannel, {
-        callId: msg.callId,
-        conversationId: msg.conversationId,
-        senderId: myUserId,
-        targetUserId: msg.senderId,
-        type: 'call-ringing',
-        timestamp: new Date().toISOString(),
-      });
-
-      // Auto-dismiss incoming call if not answered within 45s
-      this.clearTimers(['unanswered']);
-      this.unansweredTimeout = setTimeout(() => {
-        if (this.state.status === 'incoming' && this.state.callId === msg.callId) {
-          this.endVoiceCall('Missed voice call.');
-        }
-      }, 45000);
-
+  public async handleIncomingInboxSignal(msg: VoiceCallSignalMessage): Promise<void> {
+    // 1. Channel & call-state check
+    const stateCheck = isSignalAllowedInCallState({
+      channelKind: 'inbox',
+      signal: msg,
+      currentStatus: this.state.status,
+      currentCallId: this.state.callId,
+      isCaller: this.state.isCaller,
+    });
+    if (!stateCheck.allowed) {
       return;
     }
 
-    // For all subsequent call signals, verify that they match the active callId, conversationId, and verified peerUser
+    // 2. Pre-verification replay check (rejects duplicates/expired without polluting seen set with unverified packets)
+    const replayPreCheck = this.replayDetector.checkOnly(msg);
+    if (!replayPreCheck.fresh) {
+      console.warn('[VoiceCall] Dropped replayed/expired inbox signal:', replayPreCheck.reason);
+      return;
+    }
+
+    const sessionInfo = await this.getVerifiedSessionUser();
+    if (!sessionInfo) return;
+    const verifiedLocalUserId = sessionInfo.userId;
+
+    // 3. Server-side verification of conversation membership & pinned peer identity keys
+    const authCheck = await this.verifyServerSideOneToOneAuthorization(msg.conversationId);
     if (
-      !this.state.callId ||
-      msg.callId !== this.state.callId ||
-      msg.conversationId !== this.state.conversationId ||
-      !this.state.peerUser ||
-      msg.senderId !== this.state.peerUser.id
+      !authCheck.authorized ||
+      !authCheck.verifiedConversationId ||
+      !authCheck.verifiedLocalUserId ||
+      !authCheck.verifiedPeerProfile ||
+      !authCheck.cryptoBundle
+    ) {
+      console.warn(
+        '[VoiceCall] Dropped unauthorized incoming call invite:',
+        authCheck.reason
+      );
+      return;
+    }
+
+    const serverVerifiedConvId = authCheck.verifiedConversationId;
+    const serverVerifiedPeer = authCheck.verifiedPeerProfile;
+    const convCryptoBundle = authCheck.cryptoBundle;
+
+    if (
+      msg.senderId !== serverVerifiedPeer.id ||
+      msg.targetUserId !== verifiedLocalUserId ||
+      msg.conversationId !== serverVerifiedConvId
+    ) {
+      console.warn('[VoiceCall] Dropped call invite with mismatched identity fields.');
+      return;
+    }
+
+    // 4. Mandatory directional AES-256-GCM + dedicated ECDSA P-256 signature verification BEFORE any state change
+    const proofVerification = await verifySignedEncryptedSignal(
+      msg,
+      serverVerifiedConvId,
+      serverVerifiedPeer.id,
+      verifiedLocalUserId,
+      convCryptoBundle
+    );
+    if (!proofVerification.valid) {
+      console.warn(
+        '[VoiceCall] Dropped call invite failing cryptographic verification:',
+        proofVerification.reason
+      );
+      return;
+    }
+
+    // 5. Commit authentic signalId & IV to the replay detector
+    const replayCommit = this.replayDetector.checkAndRecord(msg);
+    if (!replayCommit.fresh) {
+      return;
+    }
+
+    // Ignore subsequent periodic resend invites for the exact same call we are already handling
+    if (
+      this.state.callId === msg.callId &&
+      (this.state.status === 'incoming' ||
+        this.state.status === 'connecting' ||
+        this.state.status === 'connected')
     ) {
       return;
     }
 
-    const proofOk = await this.verifySignalCryptoProof(msg);
-    if (!proofOk) {
-      console.warn('[VoiceCall] Dropped signal failing cryptographic proof:', msg.type);
+    // 6. If already in another active call, notify the verified caller via the private room channel
+    if (this.state.status !== 'idle' && this.state.status !== 'ended') {
+      const busyRoomCh = await this.subscribePrivateChannel(
+        `spark_call_1on1_${serverVerifiedConvId}`,
+        () => {}
+      );
+      if (busyRoomCh) {
+        await this.sendSignalOnChannel(
+          busyRoomCh,
+          {
+            callId: msg.callId,
+            conversationId: serverVerifiedConvId,
+            senderId: verifiedLocalUserId,
+            targetUserId: serverVerifiedPeer.id,
+            type: 'call-busy',
+            timestamp: new Date().toISOString(),
+          },
+          convCryptoBundle
+        );
+        setTimeout(() => {
+          try {
+            busyRoomCh.unsubscribe();
+            getSupabase()?.removeChannel(busyRoomCh);
+          } catch {}
+        }, 300);
+      }
       return;
     }
 
+    // 7. Subscribe to the private 1-to-1 conversation room channel (fail closed if authorization fails)
+    const roomTopic = `spark_call_1on1_${serverVerifiedConvId}`;
+    const privateRoomChannel = await this.subscribePrivateChannel(roomTopic, (roomMsg) => {
+      this.handleIncomingRoomSignal(
+        roomMsg,
+        serverVerifiedConvId,
+        serverVerifiedPeer.id,
+        verifiedLocalUserId
+      ).catch((e) => console.warn('[VoiceCall] Room signal error:', e));
+    });
+
+    if (!privateRoomChannel) {
+      console.warn('[VoiceCall] Failed closed: could not subscribe to private room channel.');
+      return;
+    }
+
+    this.callRoomChannel = privateRoomChannel;
+    this.activeCryptoBundle = convCryptoBundle;
+    this.pendingIceCandidates = [];
+
+    this.updateState({
+      status: 'incoming',
+      callId: msg.callId,
+      conversationId: serverVerifiedConvId,
+      isCaller: false,
+      peerUser: serverVerifiedPeer,
+      isMuted: false,
+      isSpeakerOn: false,
+      isPeerMuted: false,
+      isPeerRinging: true,
+      connectedAt: null,
+      statusDetail: 'Incoming Voice Call...',
+      errorMessage: null,
+      isPrivateChannel: true,
+    });
+
+    this.startRingLoop('incoming');
+
+    // Send signed 'call-ringing' acknowledgement over the private room channel to prove device delivery
+    await this.sendSignalOnChannel(
+      this.callRoomChannel,
+      {
+        callId: msg.callId,
+        conversationId: serverVerifiedConvId,
+        senderId: verifiedLocalUserId,
+        targetUserId: serverVerifiedPeer.id,
+        type: 'call-ringing',
+        timestamp: new Date().toISOString(),
+      },
+      this.activeCryptoBundle
+    );
+
+    // Auto-dismiss incoming call if not answered within 45s
+    this.clearTimers(['unanswered']);
+    this.unansweredTimeout = setTimeout(() => {
+      if (this.state.status === 'incoming' && this.state.callId === msg.callId) {
+        this.endVoiceCall('Missed voice call.');
+      }
+    }, 45000);
+  }
+
+  /**
+   * Handles signals arriving on the private conversation call room channel (`spark_call_1on1_<boundConvId>`).
+   * Strictly enforces:
+   * 1. Identity & active call binding check.
+   * 2. Call-state machine transition validation (`isSignalAllowedInCallState`).
+   * 3. Replay pre-check (`replayDetector.checkOnly`).
+   * 4. Cryptographic ECDSA P-256 signature & directional AES-256-GCM verification (`verifySignedEncryptedSignal`).
+   * 5. Atomic replay commit (`replayDetector.checkAndRecord`).
+   * 6. WebRTC SDP / ICE / call-state processing (ONLY executed after steps 1–5 succeed).
+   */
+  public async handleIncomingRoomSignal(
+    msg: VoiceCallSignalMessage,
+    boundConversationId: string,
+    boundPeerUserId: string,
+    boundLocalUserId: string
+  ): Promise<boolean> {
+    if (
+      !this.state.callId ||
+      msg.callId !== this.state.callId ||
+      msg.conversationId !== boundConversationId ||
+      msg.senderId !== boundPeerUserId ||
+      msg.targetUserId !== boundLocalUserId ||
+      !this.state.peerUser ||
+      this.state.peerUser.id !== boundPeerUserId
+    ) {
+      return false;
+    }
+
+    // 1. Validate call-state machine transition BEFORE any processing
+    const stateValidation = isSignalAllowedInCallState({
+      channelKind: 'room',
+      signal: msg,
+      currentStatus: this.state.status,
+      currentCallId: this.state.callId,
+      isCaller: this.state.isCaller,
+      rtcSignalingState: this.peerConnection?.signalingState ?? null,
+    });
+    if (!stateValidation.allowed) {
+      console.warn(
+        `[VoiceCall] Dropped out-of-state room signal (${msg.type}):`,
+        stateValidation.reason
+      );
+      return false;
+    }
+
+    // 2. Pre-verification replay check (rejects already-seen signalId/IV or expired timestamp)
+    const replayPreCheck = this.replayDetector.checkOnly(msg);
+    if (!replayPreCheck.fresh) {
+      console.warn(
+        `[VoiceCall] Dropped replayed room signal (${msg.type}):`,
+        replayPreCheck.reason
+      );
+      return false;
+    }
+
+    // 3. Verify directional AES-256-GCM encryption + peer ECDSA P-256 signature BEFORE SDP/ICE processing
+    const proofVerification = await verifySignedEncryptedSignal(
+      msg,
+      boundConversationId,
+      boundPeerUserId,
+      boundLocalUserId,
+      this.activeCryptoBundle
+    );
+    if (!proofVerification.valid) {
+      console.warn(
+        `[VoiceCall] Dropped room signal (${msg.type}) failing cryptographic proof:`,
+        proofVerification.reason
+      );
+      return false;
+    }
+
+    // 4. Atomically record signalId and IV in the replay detector once signature is verified
+    const replayCommit = this.replayDetector.checkAndRecord(msg);
+    if (!replayCommit.fresh) {
+      return false;
+    }
+
+    // 5. Execute verified signal action (SDP/ICE/state update)
     switch (msg.type) {
       case 'call-ringing': {
-        if (this.state.status === 'outgoing') {
-          this.updateState({
-            isPeerRinging: true,
-            statusDetail: 'Ringing...',
-          });
-        }
-        break;
+        this.updateState({
+          isPeerRinging: true,
+          statusDetail: 'Ringing on recipient device...',
+        });
+        return true;
       }
 
       case 'call-busy': {
-        this.endVoiceCall(
+        await this.endVoiceCall(
           `${this.state.peerUser.display_name || this.state.peerUser.username} is busy in another call.`,
           false
         );
-        break;
+        return true;
       }
 
       case 'call-reject': {
-        this.endVoiceCall(
+        await this.endVoiceCall(
           `${this.state.peerUser.display_name || this.state.peerUser.username} declined the call.`,
           false
         );
-        break;
+        return true;
       }
 
       case 'call-end': {
-        this.endVoiceCall(msg.reason || 'Call ended.', false);
-        break;
+        await this.endVoiceCall(msg.reason || 'Call ended.', false);
+        return true;
       }
 
       case 'peer-mute': {
         this.updateState({
           isPeerMuted: Boolean(msg.isMuted),
         });
-        break;
+        return true;
       }
 
       case 'call-accept': {
-        if (this.state.isCaller && this.state.status === 'outgoing') {
-          this.stopRingLoop();
-          this.clearTimers(['invite', 'unanswered']);
-          this.updateState({
-            status: 'connecting',
-            statusDetail: 'Connecting P2P audio (STUN)...',
-          });
-          await this.createAndSendOffer(myUserId);
-        }
-        break;
+        this.stopRingLoop();
+        this.clearTimers(['invite', 'unanswered']);
+        this.updateState({
+          status: 'connecting',
+          statusDetail: 'Connecting P2P audio (STUN)...',
+        });
+        await this.createAndSendOffer(boundLocalUserId);
+        return true;
       }
 
       case 'webrtc-offer': {
-        if (!msg.sdp || this.isHandlingOffer) return;
+        if (!msg.sdp || this.isHandlingOffer) return false;
         this.isHandlingOffer = true;
         try {
           if (!this.peerConnection) {
-            this.createPeerConnection(myUserId);
+            this.createPeerConnection(boundLocalUserId);
           }
           const pc = this.peerConnection;
-          if (!pc) return;
+          if (!pc) return false;
 
-          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          await pc.setRemoteDescription(
+            typeof RTCSessionDescription !== 'undefined'
+              ? new RTCSessionDescription(msg.sdp)
+              : msg.sdp
+          );
           await this.flushPendingIceCandidates();
 
           const answer = await pc.createAnswer();
@@ -919,56 +1764,87 @@ class OneToOneVoiceCallManager {
           if (this.state.callId && this.state.conversationId && this.state.peerUser) {
             await this.sendSignalOnChannel(this.callRoomChannel, {
               callId: this.state.callId,
-              conversationId: this.state.conversationId,
-              senderId: myUserId,
-              targetUserId: this.state.peerUser.id,
+              conversationId: boundConversationId,
+              senderId: boundLocalUserId,
+              targetUserId: boundPeerUserId,
               type: 'webrtc-answer',
               sdp: pc.localDescription || answer,
               timestamp: new Date().toISOString(),
             });
           }
+          return true;
         } catch (err: any) {
           console.error('[VoiceCall] Error handling WebRTC offer:', err);
-          this.endVoiceCall('Failed to negotiate WebRTC audio parameters.');
+          await this.endVoiceCall('Failed to negotiate WebRTC audio parameters.');
+          return false;
         } finally {
           this.isHandlingOffer = false;
         }
-        break;
       }
 
       case 'webrtc-answer': {
-        if (!msg.sdp || !this.peerConnection) return;
+        if (!msg.sdp || !this.peerConnection) return false;
         try {
           if (this.peerConnection.signalingState === 'have-local-offer') {
             await this.peerConnection.setRemoteDescription(
-              new RTCSessionDescription(msg.sdp)
+              typeof RTCSessionDescription !== 'undefined'
+                ? new RTCSessionDescription(msg.sdp)
+                : msg.sdp
             );
             await this.flushPendingIceCandidates();
+            return true;
           }
+          return false;
         } catch (err) {
           console.error('[VoiceCall] Error setting remote answer:', err);
+          return false;
         }
-        break;
       }
 
       case 'webrtc-ice': {
-        if (!msg.candidate) return;
+        if (!msg.candidate) return false;
         try {
           if (this.peerConnection && this.peerConnection.remoteDescription) {
-            await this.peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            await this.peerConnection.addIceCandidate(
+              typeof RTCIceCandidate !== 'undefined'
+                ? new RTCIceCandidate(msg.candidate)
+                : msg.candidate
+            );
           } else {
             this.pendingIceCandidates.push(msg.candidate);
           }
+          return true;
         } catch (err) {
           console.warn('[VoiceCall] Non-fatal ICE candidate error:', err);
+          return false;
         }
-        break;
       }
+
+      default:
+        return false;
     }
   }
 
   /**
-   * Accepts an incoming 1-to-1 voice call.
+   * Test-only helper allowing the automated security test suite to bind a verified session state
+   * and inspect `handleIncomingRoomSignal` execution order against a mock/spy RTCPeerConnection.
+   */
+  public configureTestSessionForAudit(params: {
+    state: Partial<VoiceCallState>;
+    cryptoBundle: CallCryptoSessionBundle;
+    mockPeerConnection?: RTCPeerConnection | null;
+  }): void {
+    this.replayDetector.clear();
+    this.activeCryptoBundle = params.cryptoBundle;
+    this.peerConnection = params.mockPeerConnection ?? null;
+    this.updateState({
+      ...INITIAL_CALL_STATE,
+      ...params.state,
+    });
+  }
+
+  /**
+   * Accepts an incoming 1-to-1 voice call after re-verifying the authenticated session.
    */
   public async acceptIncomingCall(): Promise<{ success: boolean; error?: string }> {
     unlockSound();
@@ -977,22 +1853,23 @@ class OneToOneVoiceCallManager {
       this.state.status !== 'incoming' ||
       !this.state.callId ||
       !this.state.conversationId ||
-      !this.state.peerUser
+      !this.state.peerUser ||
+      !this.callRoomChannel ||
+      !this.activeCryptoBundle
     ) {
-      return { success: false, error: 'No active incoming call to accept.' };
+      return { success: false, error: 'No active authorized incoming call to accept.' };
     }
 
     this.stopRingLoop();
     this.clearTimers(['unanswered']);
 
     const sessionInfo = await this.getVerifiedSessionUser();
-    const myUserId = sessionInfo?.userId || this.verifiedUserId;
-    if (!myUserId) {
+    if (!sessionInfo) {
       this.endVoiceCall('Session expired. Please sign in again.');
       return { success: false, error: 'Session expired.' };
     }
+    const myUserId = sessionInfo.userId;
 
-    // Request microphone access
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -1021,7 +1898,7 @@ class OneToOneVoiceCallManager {
     this.createPeerConnection(myUserId);
     this.startIceWatchdog();
 
-    await this.sendSignalOnChannel(this.callRoomChannel, {
+    const sent = await this.sendSignalOnChannel(this.callRoomChannel, {
       callId: this.state.callId,
       conversationId: this.state.conversationId,
       senderId: myUserId,
@@ -1029,6 +1906,14 @@ class OneToOneVoiceCallManager {
       type: 'call-accept',
       timestamp: new Date().toISOString(),
     });
+
+    if (!sent) {
+      this.endVoiceCall(
+        'Failed closed: could not send call acceptance on private channel.',
+        false
+      );
+      return { success: false, error: 'Private signaling channel failed.' };
+    }
 
     return { success: true };
   }
@@ -1039,7 +1924,7 @@ class OneToOneVoiceCallManager {
   public async rejectIncomingCall(customError?: string): Promise<void> {
     this.stopRingLoop();
     const sessionInfo = await this.getVerifiedSessionUser();
-    const myUserId = sessionInfo?.userId || this.verifiedUserId;
+    const myUserId = sessionInfo?.userId;
 
     if (
       myUserId &&
@@ -1088,7 +1973,6 @@ class OneToOneVoiceCallManager {
 
     this.peerConnection = pc;
 
-    // Attach local microphone tracks
     if (this.localStream) {
       for (const track of this.localStream.getAudioTracks()) {
         track.enabled = !this.state.isMuted;
@@ -1096,7 +1980,6 @@ class OneToOneVoiceCallManager {
       }
     }
 
-    // Handle remote audio tracks
     pc.ontrack = (event: RTCTrackEvent) => {
       if (event.streams && event.streams[0]) {
         this.updateRemoteStream(event.streams[0]);
@@ -1106,7 +1989,6 @@ class OneToOneVoiceCallManager {
       }
     };
 
-    // Trickle ICE candidates over authenticated Supabase Realtime channel
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (
         event.candidate &&
@@ -1196,7 +2078,7 @@ class OneToOneVoiceCallManager {
       await pc.setLocalDescription(offer);
 
       if (this.state.callId && this.state.conversationId && this.state.peerUser) {
-        await this.sendSignalOnChannel(this.callRoomChannel, {
+        const sent = await this.sendSignalOnChannel(this.callRoomChannel, {
           callId: this.state.callId,
           conversationId: this.state.conversationId,
           senderId: myUserId,
@@ -1205,6 +2087,12 @@ class OneToOneVoiceCallManager {
           sdp: pc.localDescription || offer,
           timestamp: new Date().toISOString(),
         });
+        if (!sent) {
+          this.endVoiceCall(
+            'Failed closed: private channel rejected WebRTC offer.',
+            false
+          );
+        }
       }
     } catch (err: any) {
       console.error('[VoiceCall] Offer creation failed:', err);
@@ -1218,7 +2106,9 @@ class OneToOneVoiceCallManager {
     this.pendingIceCandidates = [];
     for (const candidate of queued) {
       try {
-        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        await this.peerConnection.addIceCandidate(
+          typeof RTCIceCandidate !== 'undefined' ? new RTCIceCandidate(candidate) : candidate
+        );
       } catch (e) {
         console.warn('[VoiceCall] Queued ICE candidate notice:', e);
       }
@@ -1237,7 +2127,7 @@ class OneToOneVoiceCallManager {
   }
 
   /**
-   * Toggles microphone mute state and notifies the remote peer.
+   * Toggles microphone mute state and notifies the remote peer over the private call room.
    */
   public async toggleMute(): Promise<boolean> {
     const nextMuted = !this.state.isMuted;
@@ -1249,7 +2139,7 @@ class OneToOneVoiceCallManager {
     this.updateState({ isMuted: nextMuted });
 
     const sessionInfo = await this.getVerifiedSessionUser();
-    const myUserId = sessionInfo?.userId || this.verifiedUserId;
+    const myUserId = sessionInfo?.userId;
     if (
       myUserId &&
       this.callRoomChannel &&
@@ -1282,7 +2172,7 @@ class OneToOneVoiceCallManager {
 
   /**
    * Ends the current call, sends `call-end` if requested, stops all microphone tracks,
-   * closes the RTCPeerConnection, and cleans up the Realtime room channel.
+   * closes the RTCPeerConnection, and cleans up the private Realtime room channel.
    */
   public async endVoiceCall(reason = 'Call ended.', notifyPeer = true): Promise<void> {
     this.stopRingLoop();
@@ -1292,20 +2182,25 @@ class OneToOneVoiceCallManager {
     const activeConvId = this.state.conversationId;
     const activePeer = this.state.peerUser;
     const roomCh = this.callRoomChannel;
+    const activeBundle = this.activeCryptoBundle;
 
-    if (notifyPeer && roomCh && activeCallId && activeConvId && activePeer) {
+    if (notifyPeer && roomCh && activeCallId && activeConvId && activePeer && activeBundle) {
       const sessionInfo = await this.getVerifiedSessionUser();
-      const myUserId = sessionInfo?.userId || this.verifiedUserId;
+      const myUserId = sessionInfo?.userId;
       if (myUserId) {
-        await this.sendSignalOnChannel(roomCh, {
-          callId: activeCallId,
-          conversationId: activeConvId,
-          senderId: myUserId,
-          targetUserId: activePeer.id,
-          type: 'call-end',
-          reason: 'Call ended.',
-          timestamp: new Date().toISOString(),
-        });
+        await this.sendSignalOnChannel(
+          roomCh,
+          {
+            callId: activeCallId,
+            conversationId: activeConvId,
+            senderId: myUserId,
+            targetUserId: activePeer.id,
+            type: 'call-end',
+            reason: 'Call ended.',
+            timestamp: new Date().toISOString(),
+          },
+          activeBundle
+        );
       }
     }
 
@@ -1319,7 +2214,10 @@ class OneToOneVoiceCallManager {
       reason.toLowerCase().includes('busy') ||
       reason.toLowerCase().includes('declined') ||
       reason.toLowerCase().includes('no answer') ||
-      reason.toLowerCase().includes('missed');
+      reason.toLowerCase().includes('offline') ||
+      reason.toLowerCase().includes('unreachable') ||
+      reason.toLowerCase().includes('missed') ||
+      reason.toLowerCase().includes('unauthorized');
 
     if (isErrorReason && activePeer) {
       this.updateState({
@@ -1377,7 +2275,7 @@ class OneToOneVoiceCallManager {
     }
 
     this.pendingIceCandidates = [];
-    this.sharedCryptoKey = null;
+    this.activeCryptoBundle = null;
     this.isHandlingOffer = false;
 
     if (this.callRoomChannel) {
