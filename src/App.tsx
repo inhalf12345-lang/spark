@@ -70,6 +70,8 @@ import {
   markFirstUsePushPromptSeen,
   subscribeUserToWebPush,
 } from './lib/pushService';
+import { VoiceCallModal } from './components/VoiceCallModal';
+import { voiceCallManager } from './lib/callService';
 
 export default function App() {
   // Session & Authentication state (synchronously restored so user stays signed in until explicit Sign Out)
@@ -606,6 +608,22 @@ export default function App() {
     };
   }, [isAuthenticated, profile.id, loadConversations]);
 
+  // Initialize authenticated 1-to-1 incoming voice call listener
+  useEffect(() => {
+    if (!isAuthenticated || !profile.id || !isSupabaseConfigured()) {
+      voiceCallManager.cleanupInboxChannel();
+      return;
+    }
+
+    voiceCallManager.initIncomingCallListener(profile.id).catch((err) => {
+      console.warn('Voice call inbox listener notice:', err);
+    });
+
+    return () => {
+      voiceCallManager.cleanupInboxChannel();
+    };
+  }, [isAuthenticated, profile.id]);
+
   const syncProfileFromDatabase = (authUser: any, data: any) => {
     setProfile((prev) => {
       const merged: UserProfile = {
@@ -644,6 +662,10 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
+    try {
+      await voiceCallManager.endVoiceCall('Call ended due to sign out.');
+      voiceCallManager.cleanupInboxChannel();
+    } catch {}
     purgeCryptoSessionMemory();
     clearUserSessionData();
 
@@ -1175,6 +1197,9 @@ export default function App() {
         profile={profile}
         onStoryCreated={handleStoryCreated}
       />
+
+      {/* Phase 1: One-to-One WebRTC Voice Calling Interface */}
+      <VoiceCallModal />
     </div>
   );
 }

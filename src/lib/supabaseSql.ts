@@ -646,6 +646,59 @@ CREATE TRIGGER on_message_inserted_send_push
   AFTER INSERT ON public.messages
   FOR EACH ROW
   EXECUTE FUNCTION public.trigger_send_push_notification();
+
+-- 13. Authenticated Private Realtime Channels Authorization (WebRTC Voice Call Signaling)
+-- Enforces server-side RLS on realtime.messages for private call signaling channels
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'realtime' AND table_name = 'messages'
+  ) THEN
+    ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+
+    DROP POLICY IF EXISTS "Authenticated users can receive private call signals" ON realtime.messages;
+    CREATE POLICY "Authenticated users can receive private call signals"
+      ON realtime.messages FOR SELECT
+      TO authenticated
+      USING (
+        auth.uid() IS NOT NULL
+        AND (
+          realtime.topic() = ('spark_call_inbox_' || auth.uid()::text)
+          OR (
+            realtime.topic() LIKE 'spark_call_1on1_%'
+            AND EXISTS (
+              SELECT 1 FROM public.conversation_members cm
+              WHERE ('spark_call_1on1_' || cm.conversation_id::text) = realtime.topic()
+                AND cm.user_id = auth.uid()
+            )
+          )
+        )
+      );
+
+    DROP POLICY IF EXISTS "Authenticated users can send private call signals" ON realtime.messages;
+    CREATE POLICY "Authenticated users can send private call signals"
+      ON realtime.messages FOR INSERT
+      TO authenticated
+      WITH CHECK (
+        auth.uid() IS NOT NULL
+        AND (
+          realtime.topic() LIKE 'spark_call_inbox_%'
+          OR (
+            realtime.topic() LIKE 'spark_call_1on1_%'
+            AND EXISTS (
+              SELECT 1 FROM public.conversation_members cm
+              WHERE ('spark_call_1on1_' || cm.conversation_id::text) = realtime.topic()
+                AND cm.user_id = auth.uid()
+            )
+          )
+        )
+      );
+  END IF;
+EXCEPTION
+  WHEN OTHERS THEN NULL;
+END $$;
 `;
+
 
 

@@ -32,3 +32,24 @@ function tone(freq: number, start: number, dur: number, vol = 0.15) {
 
 export const playSendSound = () => { tone(880, 0, 0.09); tone(1175, 0.07, 0.12); };
 export const playReceiveSound = () => { tone(660, 0, 0.12); tone(523, 0.1, 0.18); };
+
+export const playIncomingRingTone = () => {
+  tone(587.33, 0, 0.18, 0.16);
+  tone(880, 0.2, 0.24, 0.16);
+};
+
+export const playOutgoingRingbackTone = () => {
+  tone(440, 0, 0.35, 0.1);
+  tone(480, 0.02, 0.33, 0.08);
+};
+
+export const playCallConnectedTone = () => {
+  tone(523.25, 0, 0.1, 0.12);
+  tone(659.25, 0.09, 0.14, 0.14);
+};
+
+export const playCallEndedTone = () => {
+  tone(493.88, 0, 0.12, 0.12);
+  tone(369.99, 0.11, 0.2, 0.12);
+};
+

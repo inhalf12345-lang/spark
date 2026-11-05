@@ -157,3 +157,57 @@ export interface UserStory {
   expires_at: string;
   spark_reactions: number;
 }
+
+export type VoiceCallStatus =
+  | 'idle'
+  | 'outgoing'
+  | 'incoming'
+  | 'connecting'
+  | 'connected'
+  | 'ended';
+
+export type VoiceCallSignalType =
+  | 'call-invite'
+  | 'call-ringing'
+  | 'call-accept'
+  | 'call-reject'
+  | 'call-busy'
+  | 'call-end'
+  | 'peer-mute'
+  | 'webrtc-offer'
+  | 'webrtc-answer'
+  | 'webrtc-ice';
+
+export interface VoiceCallSignalMessage {
+  callId: string;
+  conversationId: string;
+  senderId: string;
+  targetUserId: string;
+  type: VoiceCallSignalType;
+  timestamp: string;
+  sdp?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
+  isMuted?: boolean;
+  reason?: string;
+  cryptoProof?: {
+    ciphertext: string;
+    iv: string;
+  };
+}
+
+export interface VoiceCallState {
+  status: VoiceCallStatus;
+  callId: string | null;
+  conversationId: string | null;
+  isCaller: boolean;
+  peerUser: PublicUserProfile | null;
+  isMuted: boolean;
+  isSpeakerOn: boolean;
+  isPeerMuted: boolean;
+  isPeerRinging: boolean;
+  connectedAt: number | null;
+  statusDetail: string | null;
+  errorMessage: string | null;
+  isPrivateChannel: boolean;
+}
+

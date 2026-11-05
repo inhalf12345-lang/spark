@@ -57,6 +57,7 @@ import { GroupPhotoButtonAndModal } from './GroupPhotoModal';
 import { GroupTodoSection } from './GroupTodoBoard';
 import { playSendSound, playReceiveSound } from '../lib/sounds';
 import { isConversationMuted, toggleConversationMute } from '../lib/pushService';
+import { voiceCallManager } from '../lib/callService';
 
 interface ChatTargetUser {
   id: string;
@@ -557,9 +558,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }, 1200);
   };
 
-  const triggerCallNotice = (type: 'Audio Call' | 'Video Call') => {
-    setCallNotice(`${type} with ${friend.display_name || friend.username} is ringing...`);
-    setTimeout(() => setCallNotice(null), 3500);
+  const triggerCallNotice = async (type: 'Audio Call' | 'Video Call') => {
+    if (type === 'Video Call') {
+      setCallNotice('Phase 1 supports 1-to-1 voice calling only. Video calling is not enabled yet.');
+      setTimeout(() => setCallNotice(null), 3500);
+      return;
+    }
+
+    if (friend.is_group) {
+      setCallNotice('Phase 1 supports 1-to-1 voice calling only. Group calling is not enabled yet.');
+      setTimeout(() => setCallNotice(null), 3500);
+      return;
+    }
+
+    const result = await voiceCallManager.startOneToOneVoiceCall(activeConvId, friend.id);
+    if (!result.success && result.error) {
+      setCallNotice(result.error);
+      setTimeout(() => setCallNotice(null), 4500);
+    }
   };
 
   // Handle image file selection (group only)
