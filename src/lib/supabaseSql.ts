@@ -367,7 +367,11 @@ BEGIN
     SELECT 1 FROM information_schema.tables
     WHERE table_schema = 'realtime' AND table_name = 'messages'
   ) THEN
-    ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+    BEGIN
+      ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
 
     DROP POLICY IF EXISTS "Authenticated users can receive private call signals" ON realtime.messages;
     DROP POLICY IF EXISTS "Authenticated users can send private call signals" ON realtime.messages;
@@ -944,7 +948,11 @@ BEGIN
     SELECT 1 FROM information_schema.tables
     WHERE table_schema = 'realtime' AND table_name = 'messages'
   ) THEN
-    ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+    BEGIN
+      ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
 
     -- Only drop Spark's own call policies (never drop unrelated policies)
     DROP POLICY IF EXISTS "Authenticated users can receive private call signals" ON realtime.messages;
