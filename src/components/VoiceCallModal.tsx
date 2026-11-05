@@ -213,6 +213,19 @@ export const VoiceCallModal: React.FC = () => {
     }
   };
 
+  const pendingKeyApproval =
+    callState.status === 'ended' ? voiceCallManager.getPendingKeyRotationApproval() : null;
+
+  const handleApproveNewPeerKey = async () => {
+    if (isActionPending || !pendingKeyApproval) return;
+    setIsActionPending(true);
+    try {
+      await voiceCallManager.approvePendingPeerKeyAndContinue();
+    } finally {
+      setIsActionPending(false);
+    }
+  };
+
   // Minimized floating bar during active/outgoing call
   if (
     isMinimized &&
@@ -374,9 +387,25 @@ export const VoiceCallModal: React.FC = () => {
                 <span>{callState.statusDetail || 'Connecting P2P audio...'}</span>
               </div>
             ) : callState.status === 'ended' ? (
-              <div className="mt-2 p-3 rounded-2xl bg-rose-950/60 border border-rose-800/70 text-xs text-rose-200 flex items-start gap-2 text-left max-w-xs">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                <span>{callState.errorMessage || callState.statusDetail || 'Call ended.'}</span>
+              <div className="mt-2 w-full max-w-xs space-y-2 text-left">
+                <div className="p-3 rounded-2xl bg-rose-950/60 border border-rose-800/70 text-xs text-rose-200 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span>{callState.errorMessage || callState.statusDetail || 'Call ended.'}</span>
+                </div>
+                {pendingKeyApproval && (
+                  <div className="p-2.5 rounded-xl bg-slate-900/90 border border-amber-500/40 text-[11px] text-amber-200 space-y-1">
+                    <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>New Device Key Detected (v{pendingKeyApproval.candidateBundle.keyRotationVersion})</span>
+                    </div>
+                    <p className="text-slate-300 leading-relaxed">
+                      {peerName} signed in on another browser or device. Approve this key only if you recognize this change:
+                    </p>
+                    <div className="font-mono text-[10px] text-emerald-300 bg-slate-950/90 px-2 py-1 rounded border border-slate-800 break-all">
+                      SHA-256: {pendingKeyApproval.candidateEcdsaFingerprint.slice(0, 16)}…{pendingKeyApproval.candidateEcdsaFingerprint.slice(-16)}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <span className="text-xs font-semibold text-rose-300 animate-pulse">
@@ -486,7 +515,24 @@ export const VoiceCallModal: React.FC = () => {
 
           {/* Controls: Ended / Diagnostic Screen */}
           {callState.status === 'ended' && (
-            <div className="w-full mt-6">
+            <div className="w-full mt-5 space-y-2.5">
+              {pendingKeyApproval && (
+                <button
+                  type="button"
+                  onClick={handleApproveNewPeerKey}
+                  disabled={isActionPending}
+                  className="w-full py-2.5 px-4 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white font-bold text-xs shadow-lg shadow-emerald-600/25 transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>
+                    {isActionPending
+                      ? 'Approving Key...'
+                      : pendingKeyApproval.pendingIncomingInvite
+                      ? 'Approve New Device Key & Answer'
+                      : 'Approve New Device Key & Call'}
+                  </span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => voiceCallManager.dismissEndedCallScreen()}

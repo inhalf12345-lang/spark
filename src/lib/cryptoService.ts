@@ -934,6 +934,10 @@ export async function verifyAndPinPeerKeyBundle(
       status: 'version_downgrade_rejected',
       keyMismatchDetected: true,
       peerUserId,
+      keyRotationVersion: integrity.bundle.keyRotationVersion,
+      ecdhFingerprint: integrity.ecdhFingerprint,
+      ecdsaFingerprint: integrity.ecdsaFingerprint,
+      bundle: integrity.bundle,
       reason: `Peer key rotation version downgrade rejected (fetched v${integrity.bundle.keyRotationVersion} < pinned v${existingPin.keyRotationVersion}).`,
       pinnedRecord: existingPin,
     };
@@ -950,6 +954,10 @@ export async function verifyAndPinPeerKeyBundle(
       status: 'key_mismatch_rejected',
       keyMismatchDetected: true,
       peerUserId,
+      keyRotationVersion: integrity.bundle.keyRotationVersion,
+      ecdhFingerprint: integrity.ecdhFingerprint,
+      ecdsaFingerprint: integrity.ecdsaFingerprint,
+      bundle: integrity.bundle,
       reason:
         'Security alert: Peer signing/identity key changed from the pinned fingerprint. Spark never silently trusts a newly fetched signing key; explicit key rotation approval is required.',
       pinnedRecord: existingPin,
@@ -975,14 +983,15 @@ export async function verifyAndPinPeerKeyBundle(
  * Explicitly approves a peer's rotated key bundle after out-of-band / user confirmation.
  * Enforces that:
  * 1. The new bundle passes full cryptographic integrity & self-signature verification (`verifyPublishedKeyBundleIntegrity`).
- * 2. If a previous pin exists, `newBundle.keyRotationVersion > existingPin.keyRotationVersion`.
+ * 2. If a previous pin exists, `newBundle.keyRotationVersion > existingPin.keyRotationVersion` (unless `allowNewDeviceKeyReset` is explicitly passed by user UI confirmation when a peer signed in on a new device).
  * 3. `expectedNewEcdsaFingerprint` matches the new bundle's ECDSA fingerprint.
  */
 export async function approvePeerKeyRotation(
   localUserId: string,
   peerUserId: string,
   rawNewBundle: unknown,
-  expectedNewEcdsaFingerprint: string
+  expectedNewEcdsaFingerprint: string,
+  allowNewDeviceKeyReset = false
 ): Promise<VerifiedPeerKeyBundleResult> {
   const integrity = await verifyPublishedKeyBundleIntegrity(peerUserId, rawNewBundle);
   if (
@@ -1011,7 +1020,11 @@ export async function approvePeerKeyRotation(
   }
 
   const existingPin = await getPinnedPeerKeyRecord(localUserId, peerUserId);
-  if (existingPin && integrity.bundle.keyRotationVersion <= existingPin.keyRotationVersion) {
+  if (
+    existingPin &&
+    !allowNewDeviceKeyReset &&
+    integrity.bundle.keyRotationVersion <= existingPin.keyRotationVersion
+  ) {
     return {
       trusted: false,
       status: 'version_downgrade_rejected',
@@ -1022,10 +1035,14 @@ export async function approvePeerKeyRotation(
   }
 
   const nowIso = new Date().toISOString();
+  const effectiveVersion = existingPin
+    ? Math.max(integrity.bundle.keyRotationVersion, existingPin.keyRotationVersion)
+    : integrity.bundle.keyRotationVersion;
+
   const updatedPin: PeerPinnedKeyRecord = {
     localUserId,
     peerUserId,
-    keyRotationVersion: integrity.bundle.keyRotationVersion,
+    keyRotationVersion: effectiveVersion,
     ecdhFingerprint: integrity.ecdhFingerprint,
     ecdsaFingerprint: integrity.ecdsaFingerprint,
     ecdhPublicJwk: {
@@ -1053,7 +1070,7 @@ export async function approvePeerKeyRotation(
     status: 'matched_pin',
     keyMismatchDetected: false,
     peerUserId,
-    keyRotationVersion: integrity.bundle.keyRotationVersion,
+    keyRotationVersion: effectiveVersion,
     ecdhPublicKey: integrity.ecdhPublicKey,
     ecdsaVerifyPublicKey: integrity.ecdsaVerifyPublicKey,
     ecdhFingerprint: integrity.ecdhFingerprint,

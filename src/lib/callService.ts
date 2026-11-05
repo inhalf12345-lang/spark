@@ -1,6 +1,7 @@
 import { RealtimeChannel } from '@supabase/supabase-js';
 import {
   PublicUserProfile,
+  PublishedUserCryptoKeyBundle,
   VoiceCallSignalMessage,
   VoiceCallSignalType,
   VoiceCallState,
@@ -12,6 +13,7 @@ import {
   getOrCreateDeviceIdentityKeyPair,
   syncPublicKeyToSupabase,
   fetchAndVerifyPeerKeyBundle,
+  approvePeerKeyRotation,
   deriveDirectionalCallSignalKey,
   signCallSignalCanonical,
   verifyCallSignalSignature,
@@ -702,6 +704,16 @@ export interface CallRealtimeTransportOverride {
   }) => Promise<boolean>;
 }
 
+export interface PendingPeerKeyApproval {
+  localUserId: string;
+  peerUserId: string;
+  conversationId: string;
+  peerProfile: PublicUserProfile;
+  candidateBundle: PublishedUserCryptoKeyBundle;
+  candidateEcdsaFingerprint: string;
+  pendingIncomingInvite?: VoiceCallSignalMessage;
+}
+
 export class OneToOneVoiceCallManager {
   private state: VoiceCallState = { ...INITIAL_CALL_STATE };
   private stateListeners = new Set<CallStateListener>();
@@ -712,6 +724,7 @@ export class OneToOneVoiceCallManager {
   private inboxInitPromise: Promise<void> | null = null;
   private callRoomChannel: RealtimeChannel | null = null;
   private testTransportOverride: CallRealtimeTransportOverride | null = null;
+  private pendingKeyRotationApproval: PendingPeerKeyApproval | null = null;
 
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
@@ -741,6 +754,50 @@ export class OneToOneVoiceCallManager {
 
   public setTestRealtimeTransportOverride(override: CallRealtimeTransportOverride | null): void {
     this.testTransportOverride = override;
+  }
+
+  public getPendingKeyRotationApproval(): PendingPeerKeyApproval | null {
+    return this.pendingKeyRotationApproval;
+  }
+
+  public async approvePendingPeerKeyAndContinue(): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    const pending = this.pendingKeyRotationApproval;
+    if (!pending) {
+      return { success: false, error: 'No pending peer key change to approve.' };
+    }
+
+    const approval = await approvePeerKeyRotation(
+      pending.localUserId,
+      pending.peerUserId,
+      pending.candidateBundle,
+      pending.candidateEcdsaFingerprint,
+      true
+    );
+
+    if (!approval.trusted) {
+      const errMsg = approval.reason || 'Failed to approve peer device key.';
+      this.updateState({
+        ...this.state,
+        status: 'ended',
+        errorMessage: errMsg,
+        statusDetail: 'Key approval failed',
+      });
+      return { success: false, error: errMsg };
+    }
+
+    this.pendingKeyRotationApproval = null;
+
+    if (pending.pendingIncomingInvite) {
+      this.updateState({ ...INITIAL_CALL_STATE });
+      await this.handleIncomingInboxSignal(pending.pendingIncomingInvite);
+      return { success: true };
+    }
+
+    this.updateState({ ...INITIAL_CALL_STATE });
+    return this.startOneToOneVoiceCall(pending.conversationId, pending.peerUserId);
   }
 
   public getState(): VoiceCallState {
@@ -1016,13 +1073,34 @@ export class OneToOneVoiceCallManager {
           !peerKeyVerification.ecdsaFingerprint ||
           typeof peerKeyVerification.keyRotationVersion !== 'number'
         ) {
+          if (
+            peerKeyVerification.keyMismatchDetected &&
+            peerKeyVerification.bundle &&
+            peerKeyVerification.ecdsaFingerprint
+          ) {
+            this.pendingKeyRotationApproval = {
+              localUserId,
+              peerUserId: serverDerivedPeerId,
+              conversationId: verifiedConvId,
+              peerProfile: verifiedPeerProfile,
+              candidateBundle: peerKeyVerification.bundle,
+              candidateEcdsaFingerprint: peerKeyVerification.ecdsaFingerprint,
+            };
+          } else {
+            this.pendingKeyRotationApproval = null;
+          }
           return {
             authorized: false,
+            verifiedConversationId: verifiedConvId,
+            verifiedLocalUserId: localUserId,
+            verifiedPeerProfile,
             reason:
               peerKeyVerification.reason ||
               'Peer cryptographic key bundle failed verification or pinning check.',
           };
         }
+
+        this.pendingKeyRotationApproval = null;
 
         const [outboundAesKey, inboundAesKey] = await Promise.all([
           deriveDirectionalCallSignalKey(
@@ -1444,8 +1522,11 @@ export class OneToOneVoiceCallManager {
       this.updateState({
         ...INITIAL_CALL_STATE,
         status: 'ended',
+        peerUser: authCheck.verifiedPeerProfile || null,
         errorMessage: errMsg,
-        statusDetail: 'Authorization failed',
+        statusDetail: this.pendingKeyRotationApproval
+          ? 'Peer device key verification required'
+          : 'Authorization failed',
       });
       return { success: false, error: errMsg };
     }
@@ -1655,6 +1736,22 @@ export class OneToOneVoiceCallManager {
       !authCheck.verifiedPeerProfile ||
       !authCheck.cryptoBundle
     ) {
+      if (
+        this.pendingKeyRotationApproval &&
+        this.pendingKeyRotationApproval.conversationId === msg.conversationId &&
+        this.state.status === 'idle'
+      ) {
+        this.pendingKeyRotationApproval.pendingIncomingInvite = msg;
+        this.updateState({
+          ...INITIAL_CALL_STATE,
+          status: 'ended',
+          peerUser: authCheck.verifiedPeerProfile || null,
+          errorMessage:
+            authCheck.reason ||
+            'Peer signing/identity key changed from the pinned fingerprint. Explicit key rotation approval is required.',
+          statusDetail: 'Incoming call blocked: new peer device key',
+        });
+      }
       console.warn(
         '[VoiceCall] Dropped unauthorized incoming call invite:',
         authCheck.reason
@@ -2420,6 +2517,7 @@ export class OneToOneVoiceCallManager {
    * Dismisses the 'ended' summary screen and resets call state to 'idle'.
    */
   public dismissEndedCallScreen(): void {
+    this.pendingKeyRotationApproval = null;
     this.releaseMediaAndConnections();
     this.updateState({ ...INITIAL_CALL_STATE });
   }
