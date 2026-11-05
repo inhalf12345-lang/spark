@@ -13,12 +13,12 @@ const SHELL_CACHE_NAME = 'spark-app-shell-v2';
 const SAFE_APP_SHELL_PATHS = [
   './',
   './index.html',
-  './manifest.json',
-  './icon.svg',
-  './pwa-192x192.png',
-  './pwa-512x512.png',
-  './pwa-maskable-512x512.png',
-  './apple-touch-icon.png',
+  './public/manifest.json',
+  './public/icon.svg',
+  './public/pwa-192x192.png',
+  './public/pwa-512x512.png',
+  './public/pwa-maskable-512x512.png',
+  './public/apple-touch-icon.png',
   './public/gh-pages-bundle/app.css',
   './public/gh-pages-bundle/app.js',
 ];
@@ -279,8 +279,8 @@ self.addEventListener('push', (event) => {
     payload.body ||
     (isGroup ? 'New message in your group.' : 'You received a new message.');
   const tag = payload.tag || (conversationId ? `spark-conv-${conversationId}` : 'spark-msg');
-  const icon = payload.icon || resolveScopeUrl('pwa-192x192.png');
-  const badge = payload.badge || resolveScopeUrl('pwa-192x192.png');
+  const icon = payload.icon || resolveScopeUrl('public/pwa-192x192.png');
+  const badge = payload.badge || resolveScopeUrl('public/pwa-192x192.png');
   const targetUrl = payload.url
     ? resolveScopeUrl(payload.url)
     : conversationId
