@@ -26,6 +26,7 @@ import {
   playOutgoingRingbackTone,
   playCallConnectedTone,
   playCallEndedTone,
+  stopRingTonePlayback,
   unlockSound,
 } from './sounds';
 
@@ -739,6 +740,7 @@ export class OneToOneVoiceCallManager {
   private iceConnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private disconnectedRecoveryTimeout: ReturnType<typeof setTimeout> | null = null;
   private isHandlingOffer = false;
+  private activeIncomingNotification: Notification | null = null;
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -749,6 +751,23 @@ export class OneToOneVoiceCallManager {
       };
       window.addEventListener('beforeunload', cleanupOnUnload);
       window.addEventListener('pagehide', cleanupOnUnload);
+
+      const ensureInboxAliveOnWake = () => {
+        if (
+          typeof document !== 'undefined' &&
+          document.visibilityState === 'hidden'
+        ) {
+          return;
+        }
+        if (this.verifiedUserId && !this.testTransportOverride) {
+          void this.initIncomingCallListener(this.verifiedUserId);
+        }
+      };
+      window.addEventListener('focus', ensureInboxAliveOnWake);
+      window.addEventListener('online', ensureInboxAliveOnWake);
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', ensureInboxAliveOnWake);
+      }
     }
   }
 
@@ -1228,7 +1247,13 @@ export class OneToOneVoiceCallManager {
       }, 5000);
 
       ch.on('broadcast', { event: 'voice_call_signal' }, (payload) => {
-        const msg = payload?.payload as VoiceCallSignalMessage | undefined;
+        const msg = (
+          payload?.payload &&
+          typeof payload.payload === 'object' &&
+          'signalId' in payload.payload
+            ? payload.payload
+            : payload
+        ) as VoiceCallSignalMessage | undefined;
         if (
           msg &&
           typeof msg.signalId === 'string' &&
@@ -1247,7 +1272,23 @@ export class OneToOneVoiceCallManager {
           onSignal(msg);
         }
       }).subscribe((status: string, err?: Error) => {
-        if (settled) return;
+        if (settled) {
+          if (
+            this.inboxChannel === ch &&
+            (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')
+          ) {
+            this.inboxChannel = null;
+            void this.evictChannelInstance(ch);
+            if (this.verifiedUserId && !this.testTransportOverride) {
+              setTimeout(() => {
+                if (this.verifiedUserId && !this.inboxChannel) {
+                  void this.initIncomingCallListener(this.verifiedUserId);
+                }
+              }, 1500);
+            }
+          }
+          return;
+        }
         if (status === 'SUBSCRIBED') {
           settled = true;
           clearTimeout(timer);
@@ -1742,6 +1783,11 @@ export class OneToOneVoiceCallManager {
         this.state.status === 'idle'
       ) {
         this.pendingKeyRotationApproval.pendingIncomingInvite = msg;
+        if (typeof window !== 'undefined') {
+          try {
+            playIncomingRingTone();
+          } catch {}
+        }
         this.updateState({
           ...INITIAL_CALL_STATE,
           status: 'ended',
@@ -2581,11 +2627,15 @@ export class OneToOneVoiceCallManager {
     try {
       playFn();
     } catch {}
+    if (mode === 'incoming') {
+      this.showIncomingCallNotification();
+    }
+    const intervalMs = mode === 'incoming' ? 1800 : 2400;
     this.ringInterval = setInterval(() => {
       try {
         playFn();
       } catch {}
-    }, 2400);
+    }, intervalMs);
   }
 
   private stopRingLoop(): void {
@@ -2593,6 +2643,39 @@ export class OneToOneVoiceCallManager {
       clearInterval(this.ringInterval);
       this.ringInterval = null;
     }
+    if (typeof window !== 'undefined') {
+      try {
+        stopRingTonePlayback();
+      } catch {}
+    }
+    if (this.activeIncomingNotification) {
+      try {
+        this.activeIncomingNotification.close();
+      } catch {}
+      this.activeIncomingNotification = null;
+    }
+  }
+
+  private showIncomingCallNotification(): void {
+    if (typeof window === 'undefined' || typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'granted') return;
+    const peerName =
+      this.state.peerUser?.display_name || this.state.peerUser?.username || 'Spark Contact';
+    const peerAvatar = this.state.peerUser?.avatar_url;
+    try {
+      const notif = new Notification(`Incoming Voice Call — ${peerName}`, {
+        body: 'Tap to return to Spark and answer the voice call.',
+        icon: peerAvatar,
+        tag: 'spark-incoming-voice-call',
+      });
+      notif.onclick = () => {
+        try {
+          window.focus();
+          notif.close();
+        } catch {}
+      };
+      this.activeIncomingNotification = notif;
+    } catch {}
   }
 
   private clearTimers(
