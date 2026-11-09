@@ -1004,28 +1004,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`fixed inset-0 z-50 flex flex-col transition-all duration-300 ${
+      className={`spark-aura-surface fixed inset-0 z-50 flex flex-col transition-all duration-300 ${
         isExiting ? 'liquid-exit' : 'liquid-enter'
       }`}
       style={{
         background: `
-          radial-gradient(circle at 15% 30%, #e0f2fe 0%, #f0f9ff 40%, transparent 70%),
-          radial-gradient(circle at 85% 40%, #fdf2f8 0%, #ffe4e6 50%, transparent 70%),
-          linear-gradient(180deg, #ffffff 0%, #faf8ff 50%, #fff1f2 100%)
+          radial-gradient(circle at 15% 25%, #ede9fe 0%, #f5f3ff 42%, transparent 72%),
+          radial-gradient(circle at 85% 38%, #f3e8ff 0%, #ede9fe 48%, transparent 72%),
+          linear-gradient(180deg, #f8f7fc 0%, #f4f1fb 52%, #f8f7fc 100%)
         `,
       }}
     >
-      {/* Light Header */}
-      <header className="sticky top-0 z-20 w-full px-4 sm:px-6 py-2.5 bg-white/90 backdrop-blur-md border-b border-slate-100/80 shadow-xs">
+      {/* Spark Aura Header */}
+      <header className="sticky top-0 z-20 w-full px-4 sm:px-6 py-3 bg-white/95 backdrop-blur-md border-b border-violet-100/80 shadow-[0_4px_20px_rgba(42,30,75,0.04)]">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           {/* Left: Back chevron + Avatar + User/Group info */}
           <div className="flex items-center gap-2.5">
             <button
               onClick={handleBack}
-              className="w-9 h-9 rounded-full flex items-center justify-center text-[#ff3b69] hover:bg-rose-50 transition-colors -ml-1 active:scale-90"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-700 hover:text-[#8B5CF6] hover:bg-violet-50 transition-colors -ml-1 active:scale-90"
               title="Back to Messages"
             >
-              <ChevronLeft className="w-6 h-6 stroke-[2.8]" />
+              <ChevronLeft className="w-6 h-6 stroke-[2.6]" />
             </button>
 
             <div
@@ -1036,7 +1036,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               title={friend.is_group ? 'Click for group details & settings' : undefined}
             >
               <div className="relative">
-                <div className="w-10 h-10 rounded-full p-[1.5px] bg-gradient-to-tr from-[#ff3b69] to-[#fb7185] shadow-xs">
+                <div className="w-10 h-10 rounded-full p-[1.5px] bg-gradient-to-tr from-[#8B5CF6] to-[#A78BFA] shadow-xs">
                   <img
                     src={
                       friend.avatar_url ||
@@ -1050,7 +1050,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   />
                 </div>
                 {friend.is_group ? (
-                  <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#ff3b69] border-2 border-white flex items-center justify-center text-white">
+                  <span className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#8B5CF6] border-2 border-white flex items-center justify-center text-white">
                     <Users className="w-2.5 h-2.5" />
                   </span>
                 ) : (
@@ -1060,31 +1060,33 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               <div>
                 <div className="flex items-center gap-1.5">
-                  <h2 className="font-display font-bold text-sm tracking-tight text-slate-900">
+                  <h2 className="font-display font-bold text-sm sm:text-[15px] tracking-tight text-slate-900">
                     {friend.display_name || friend.username}
                   </h2>
                   {!friend.is_group && (
-                    <div className="flex items-center gap-0.5 text-rose-500 font-bold text-[10px]">
-                      <Flame className="w-3 h-3 fill-rose-500" />
+                    <div className="flex items-center gap-0.5 text-[#8B5CF6] bg-violet-50 px-1.5 py-0.5 rounded-full font-bold text-[10px]">
+                      <Flame className="w-3 h-3 fill-[#8B5CF6] text-[#8B5CF6]" />
                       <span>{friend.streak_days || 1}d</span>
                     </div>
                   )}
                 </div>
 
                 {/* Status */}
-                <div className="flex items-center gap-2 text-[10px]">
+                <div className="flex items-center gap-2 text-[10px] mt-0.5">
                   {friend.is_group ? (
-                    <span className="text-slate-500 font-medium flex items-center gap-1">
-                      <Users className="w-3 h-3 text-[#ff3b69]" />
+                    <span className="text-emerald-600 font-semibold flex items-center gap-1">
+                      <Users className="w-3 h-3 text-[#8B5CF6]" />
                       <span>{friend.member_count || (friend.members?.length || 2)} members</span>
                       {isGroupCreator && (
-                        <span className="text-[9px] font-semibold text-[#ff3b69] bg-rose-50 px-1.5 py-0.2 rounded-full">
+                        <span className="text-[9px] font-bold text-[#8B5CF6] bg-violet-50 border border-violet-200/60 px-1.5 py-0.2 rounded-full">
                           Creator
                         </span>
                       )}
                     </span>
                   ) : (
                     <>
+                      <span className="text-emerald-600 font-semibold">Online</span>
+                      <span className="text-slate-300">•</span>
                       <span className="text-slate-400 font-mono">@{friend.username}</span>
                       {isKeyNegotiating ? (
                         <span className="text-amber-500 flex items-center gap-0.5">
@@ -1097,7 +1099,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           title="Messages are end-to-end encrypted with AES-256-GCM. Supabase cannot read them."
                         >
                           <ShieldCheck className="w-3 h-3" />
-                          <span>End-to-End Encrypted</span>
+                          <span>Encrypted</span>
                         </span>
                       ) : (
                         <span className="text-slate-400 flex items-center gap-0.5">
@@ -1113,12 +1115,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Right: Call Actions + Mute + Delete Chat / Group Info */}
-          <div className="flex items-center gap-1.5 text-[#ff3b69]">
+          <div className="flex items-center gap-1.5 text-[#8B5CF6]">
             <button
               type="button"
               onClick={handleToggleChatMute}
-              className={`w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90 ${
-                isChatMuted ? 'text-amber-500 bg-amber-50/70' : 'text-slate-400 hover:text-[#ff3b69]'
+              className={`w-9 h-9 rounded-full hover:bg-violet-50 flex items-center justify-center transition-colors active:scale-90 ${
+                isChatMuted ? 'text-amber-500 bg-amber-50/70' : 'text-slate-500 hover:text-[#8B5CF6]'
               }`}
               title={isChatMuted ? 'Unmute conversation notifications' : 'Mute conversation notifications'}
             >
@@ -1127,7 +1129,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {friend.is_group ? (
               <button
                 onClick={() => setIsGroupInfoOpen(true)}
-                className="w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90 text-slate-600 hover:text-[#ff3b69]"
+                className="w-9 h-9 rounded-full bg-violet-50/70 hover:bg-violet-100/80 flex items-center justify-center transition-colors active:scale-90 text-[#8B5CF6]"
                 title="Group Info & Creator Settings"
               >
                 <Info className="w-4 h-4" />
@@ -1144,14 +1146,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
             )}
             <button
               onClick={() => triggerCallNotice('Audio Call')}
-              className="w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90"
+              className="w-9 h-9 rounded-full bg-violet-50/80 hover:bg-violet-100 flex items-center justify-center transition-colors active:scale-90 text-[#8B5CF6]"
               title="Audio Call"
             >
               <Phone className="w-4 h-4 fill-current stroke-none" />
             </button>
             <button
               onClick={() => triggerCallNotice('Video Call')}
-              className="w-9 h-9 rounded-full hover:bg-rose-50 flex items-center justify-center transition-colors active:scale-90"
+              className="w-9 h-9 rounded-full bg-violet-50/80 hover:bg-violet-100 flex items-center justify-center transition-colors active:scale-90 text-[#8B5CF6]"
               title="Video Call"
             >
               <Video className="w-4 h-4 fill-current stroke-none" />
@@ -1171,28 +1173,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
 
       {callNotice && (
-        <div className="p-2 text-center text-xs font-semibold bg-rose-50 text-[#ff3b69] border-b border-rose-100 animate-pulse">
+        <div className="p-2 text-center text-xs font-semibold bg-violet-50 text-[#7C3AED] border-b border-violet-100 animate-pulse">
           {callNotice}
         </div>
       )}
 
       {sendError && (
-        <div className="p-2.5 text-center text-xs font-semibold bg-rose-50 text-[#ff3b69] border-b border-rose-100 flex items-center justify-center gap-1.5">
+        <div className="p-2.5 text-center text-xs font-semibold bg-rose-50 text-rose-600 border-b border-rose-100 flex items-center justify-center gap-1.5">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{sendError}</span>
         </div>
       )}
 
       {/* Messages Stream */}
-      <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3 max-w-4xl w-full mx-auto flex flex-col">
+      <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3.5 max-w-4xl w-full mx-auto flex flex-col">
         {isLoadingMessages && messages.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center py-16 text-slate-400 text-xs gap-2">
-            <Loader2 className="w-5 h-5 animate-spin text-[#ff3b69]" />
+            <Loader2 className="w-5 h-5 animate-spin text-[#8B5CF6]" />
             <span>Establishing secure conversation...</span>
           </div>
         ) : messages.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center py-16 text-center px-4">
-            <div className="w-14 h-14 rounded-full bg-rose-50 flex items-center justify-center text-[#ff3b69] mb-3 shadow-inner">
+            <div className="w-14 h-14 rounded-full bg-violet-100/80 flex items-center justify-center text-[#8B5CF6] mb-3 shadow-inner">
               {friend.is_group ? <Users className="w-7 h-7" /> : <ShieldCheck className="w-7 h-7" />}
             </div>
             <h3 className="font-display font-bold text-base text-slate-800 mb-1">
@@ -1205,19 +1207,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </p>
             <button
               onClick={() => setInputText('Hey everyone! 👋')}
-              className="px-4 py-1.5 rounded-full bg-rose-50 hover:bg-rose-100 text-[#ff3b69] font-bold text-xs transition-colors"
+              className="px-4 py-2 rounded-full bg-violet-100/80 hover:bg-violet-200/70 text-[#7C3AED] font-bold text-xs transition-colors"
             >
-              Say "Hey everyone! 👋"
+              Say &quot;Hey everyone! 👋&quot;
             </button>
           </div>
         ) : (
           <>
-            <div className="text-center py-2 flex items-center justify-center gap-1 text-[11px] font-medium text-slate-400">
-              <Lock className="w-3 h-3 text-slate-400" />
-              <span>
-                {friend.is_group
-                  ? 'Private group with Supabase Row Level Security'
-                  : 'Messages are end-to-end encrypted'}
+            <div className="text-center py-1.5 flex items-center justify-center gap-1.5 text-[11px] font-medium text-slate-400">
+              <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-white/80 border border-violet-100/80 shadow-2xs text-slate-500">
+                <Lock className="w-3 h-3 text-[#8B5CF6]" />
+                <span>
+                  {friend.is_group
+                    ? 'Private group with Supabase Row Level Security'
+                    : 'Messages are end-to-end encrypted'}
+                </span>
               </span>
             </div>
 
@@ -1243,25 +1247,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         )}&backgroundColor=f1f5f9`
                       }
                       alt={senderDisplayName}
-                      className="w-7 h-7 rounded-full object-cover bg-white mb-1 shadow-xs border border-slate-200"
+                      className="w-7 h-7 rounded-full object-cover bg-white mb-1 shadow-xs border border-violet-100"
                     />
                   )}
 
-                  {/* Message Bubble (WhatsApp style for media and text) */}
+                  {/* Message Bubble (Spark Aura Soft Pastel & Lilac Pill Styling) */}
                   <div className="max-w-[82%] sm:max-w-[70%] flex flex-col items-end">
                     <div
-                      className={`rounded-[22px] p-2 text-xs sm:text-sm font-medium leading-relaxed shadow-sm transition-transform active:scale-[0.99] ${
+                      className={`rounded-[22px] p-2 text-xs sm:text-sm font-medium leading-relaxed transition-transform active:scale-[0.99] ${
                         msg.decryption_error
-                          ? 'bg-rose-50 text-rose-800 border border-rose-200 px-4 py-2.5'
+                          ? 'bg-rose-50 text-rose-800 border border-rose-200 px-4 py-2.5 shadow-xs'
                           : isMine
-                          ? 'bg-gradient-to-r from-[#ff4b72] to-[#ff6b8b] text-white rounded-br-xs'
-                          : 'bg-white text-slate-800 border border-slate-100 rounded-bl-xs'
+                          ? 'bg-gradient-to-br from-[#8B5CF6] to-[#7C3AED] text-white rounded-br-xs shadow-[0_6px_18px_rgba(139,92,246,0.22)]'
+                          : 'bg-white text-slate-800 border border-violet-100/90 rounded-bl-xs shadow-[0_4px_14px_rgba(42,30,75,0.05)]'
                       }`}
                     >
                       {/* Sender name for group messages from others */}
                       {friend.is_group && !isMine && (
                         <div className="px-2 pt-0.5 pb-1">
-                          <span className="text-[11px] font-bold text-[#ff3b69]">
+                          <span className="text-[11px] font-bold text-[#8B5CF6]">
                             {senderDisplayName}
                           </span>
                         </div>
@@ -1296,7 +1300,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               rel="noopener noreferrer"
                               className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all ${
                                 isMine
-                                  ? 'bg-white text-[#ff3b69] hover:bg-rose-50'
+                                  ? 'bg-white text-[#7C3AED] hover:bg-violet-50'
                                   : 'bg-emerald-600 text-white hover:bg-emerald-700'
                               }`}
                             >
@@ -1344,7 +1348,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Image Preview Banner before sending (WhatsApp style) */}
       {imagePreviewUrl && (
-        <div className="bg-slate-100/90 border-t border-slate-200/80 px-4 py-2 flex items-center justify-between gap-3 max-w-4xl mx-auto w-full backdrop-blur-md animate-fade-in">
+        <div className="bg-violet-50/90 border-t border-violet-200/80 px-4 py-2 flex items-center justify-between gap-3 max-w-4xl mx-auto w-full backdrop-blur-md animate-fade-in">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="relative w-12 h-12 rounded-xl overflow-hidden shadow-xs border border-white shrink-0">
               <img
@@ -1373,7 +1377,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
 
       {/* Message Composer */}
-      <footer className="sticky bottom-0 w-full px-4 sm:px-6 py-3 bg-white/90 backdrop-blur-md border-t border-slate-100/80 shadow-xs">
+      <footer className="sticky bottom-0 w-full px-4 sm:px-6 py-3 bg-white/95 backdrop-blur-md border-t border-violet-100/80 shadow-[0_-4px_20px_rgba(42,30,75,0.04)]">
         {/* Hidden file input for Group Image Sharing */}
         {friend.is_group && (
           <input
@@ -1409,14 +1413,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   ? 'Add a caption to your photo...'
                   : friend.is_group
                   ? 'Message the group...'
-                  : 'Send an encrypted message...'
+                  : 'Type a message...'
               }
-              className="w-full py-2.5 pl-4 pr-9 rounded-full text-xs sm:text-sm bg-slate-50 border border-slate-200/60 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#ff3b69]/60 focus:bg-white transition-all shadow-inner"
+              className="w-full py-2.5 pl-4 pr-9 rounded-full text-xs sm:text-sm bg-[#f8f7fc] border border-violet-200/70 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#8B5CF6] focus:bg-white transition-all shadow-inner"
             />
             <button
               type="button"
-              onClick={() => setInputText((prev) => `${prev} 💖`)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#ff3b69] transition-colors"
+              onClick={() => setInputText((prev) => `${prev} ✨`)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#8B5CF6] transition-colors"
             >
               <Smile className="w-4 h-4" />
             </button>
@@ -1425,10 +1429,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <button
             type="submit"
             disabled={(!inputText.trim() && !selectedImageFile) || isSending}
-            className={`w-10 h-10 rounded-full flex items-center justify-center text-white transition-all shadow-md shadow-pink-500/25 active:scale-90 shrink-0 ${
+            className={`w-10 h-10 rounded-full flex items-center justify-center text-white transition-all shadow-md shadow-violet-500/25 active:scale-90 shrink-0 ${
               inputText.trim() || selectedImageFile
-                ? 'bg-gradient-to-r from-[#ff3b69] to-[#fb7185] hover:opacity-95'
-                : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                ? 'bg-gradient-to-r from-[#8B5CF6] to-[#7C3AED] hover:opacity-95'
+                : 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
             }`}
             title="Send Message"
           >

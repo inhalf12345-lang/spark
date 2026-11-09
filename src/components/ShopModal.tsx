@@ -81,7 +81,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
         particleCount: 40,
         spread: 70,
         origin: { y: 0.6, x: 0.5 },
-        colors: ['#ff3b69', '#38bdf8', '#fb7185', '#ffd700'],
+        colors: ['#8B5CF6', '#A78BFA', '#38bdf8', '#ffd700'],
         disableForReducedMotion: true,
       });
     } catch {}
@@ -106,13 +106,13 @@ export const ShopModal: React.FC<ShopModalProps> = ({
   const renderIcon = (name: string) => {
     switch (name) {
       case 'CircleDot':
-        return <CircleDot className="w-5 h-5 text-[#ff3b69]" />;
+        return <CircleDot className="w-5 h-5 text-[#8B5CF6]" />;
       case 'Flame':
         return <Flame className="w-5 h-5 text-rose-500" />;
       case 'Cpu':
         return <Cpu className="w-5 h-5 text-teal-500" />;
       case 'Palette':
-        return <Palette className="w-5 h-5 text-indigo-500" />;
+        return <Palette className="w-5 h-5 text-[#8B5CF6]" />;
       case 'Sun':
         return <Sun className="w-5 h-5 text-amber-500" />;
       case 'Terminal':
@@ -122,68 +122,56 @@ export const ShopModal: React.FC<ShopModalProps> = ({
       case 'Compass':
         return <Compass className="w-5 h-5 text-sky-500" />;
       case 'Zap':
-        return <Zap className="w-5 h-5 text-rose-500" />;
+        return <Zap className="w-5 h-5 text-[#8B5CF6]" />;
       case 'Shield':
         return <Shield className="w-5 h-5 text-amber-500" />;
       case 'Crown':
-        return <Crown className="w-5 h-5 text-pink-500" />;
+        return <Crown className="w-5 h-5 text-[#8B5CF6]" />;
       default:
-        return <ShoppingBag className="w-5 h-5 text-[#ff3b69]" />;
+        return <ShoppingBag className="w-5 h-5 text-[#8B5CF6]" />;
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-      <div className="w-full max-w-md rounded-[32px] bg-white border border-slate-100 shadow-2xl flex flex-col overflow-hidden text-slate-800 max-h-[85vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+      <div className="w-full max-w-md rounded-[32px] bg-[#f8f7fc] border border-violet-100/90 shadow-2xl flex flex-col overflow-hidden text-slate-800 max-h-[88vh]">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-100">
+        <div className="flex items-center justify-between p-4 sm:p-5 border-b border-violet-100/80 bg-white">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-full bg-rose-50 flex items-center justify-center text-[#ff3b69]">
-              <ShoppingBag className="w-4 h-4" />
+            <div className="w-9 h-9 rounded-2xl bg-violet-100/80 flex items-center justify-center text-[#8B5CF6]">
+              <Palette className="w-4 h-4" />
             </div>
             <div>
               <h2 className="font-display font-bold text-base text-slate-900 tracking-tight">
-                Rewards Boutique
+                Theme &amp; Aura Customization
               </h2>
-              <p className="text-[11px] text-slate-500">Customize your look with earned coins</p>
+              <p className="text-[11px] text-slate-500">Personalize your frames, themes &amp; styles</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-bold">
+            <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200/60 text-amber-700 text-xs font-bold">
               <Coins className="w-3.5 h-3.5 text-amber-500" />
               <span className="font-mono-numbers">{profile.coins.toLocaleString()}</span>
             </div>
 
             <button
               onClick={onClose}
-              className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-colors"
+              className="w-8 h-8 rounded-full bg-slate-100 hover:bg-violet-50 text-slate-500 hover:text-[#8B5CF6] flex items-center justify-center transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b border-slate-100 bg-slate-50/50 px-4 pt-2 gap-2 text-xs font-semibold">
-          <button
-            onClick={() => setActiveCategory('frame')}
-            className={`pb-2 px-3 border-b-2 transition-all flex items-center gap-1.5 ${
-              activeCategory === 'frame'
-                ? 'border-[#ff3b69] text-[#ff3b69] font-bold'
-                : 'border-transparent text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            <CircleDot className="w-3.5 h-3.5" />
-            <span>Frames</span>
-          </button>
-
+        {/* Pill Tabs */}
+        <div className="flex border-b border-violet-100/70 bg-white/80 px-4 py-2.5 gap-2 text-xs font-semibold">
           <button
             onClick={() => setActiveCategory('theme')}
-            className={`pb-2 px-3 border-b-2 transition-all flex items-center gap-1.5 ${
+            className={`py-1.5 px-3.5 rounded-full transition-all flex items-center gap-1.5 ${
               activeCategory === 'theme'
-                ? 'border-[#ff3b69] text-[#ff3b69] font-bold'
-                : 'border-transparent text-slate-400 hover:text-slate-600'
+                ? 'bg-[#8B5CF6] text-white font-bold shadow-sm shadow-violet-500/25'
+                : 'bg-white border border-violet-100 text-slate-500 hover:text-[#8B5CF6]'
             }`}
           >
             <Palette className="w-3.5 h-3.5" />
@@ -191,11 +179,23 @@ export const ShopModal: React.FC<ShopModalProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveCategory('frame')}
+            className={`py-1.5 px-3.5 rounded-full transition-all flex items-center gap-1.5 ${
+              activeCategory === 'frame'
+                ? 'bg-[#8B5CF6] text-white font-bold shadow-sm shadow-violet-500/25'
+                : 'bg-white border border-violet-100 text-slate-500 hover:text-[#8B5CF6]'
+            }`}
+          >
+            <CircleDot className="w-3.5 h-3.5" />
+            <span>Frames</span>
+          </button>
+
+          <button
             onClick={() => setActiveCategory('outfit')}
-            className={`pb-2 px-3 border-b-2 transition-all flex items-center gap-1.5 ${
+            className={`py-1.5 px-3.5 rounded-full transition-all flex items-center gap-1.5 ${
               activeCategory === 'outfit'
-                ? 'border-[#ff3b69] text-[#ff3b69] font-bold'
-                : 'border-transparent text-slate-400 hover:text-slate-600'
+                ? 'bg-[#8B5CF6] text-white font-bold shadow-sm shadow-violet-500/25'
+                : 'bg-white border border-violet-100 text-slate-500 hover:text-[#8B5CF6]'
             }`}
           >
             <Crown className="w-3.5 h-3.5" />
@@ -204,7 +204,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
         </div>
 
         {purchaseToast && (
-          <div className="p-2.5 bg-rose-50 border-b border-rose-100 text-center text-xs font-bold text-[#ff3b69]">
+          <div className="p-2.5 bg-violet-50 border-b border-violet-100 text-center text-xs font-bold text-[#7C3AED]">
             {purchaseToast}
           </div>
         )}
@@ -218,23 +218,23 @@ export const ShopModal: React.FC<ShopModalProps> = ({
             return (
               <div
                 key={item.id}
-                className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
+                className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
                   equipped
-                    ? 'border-[#ff3b69] bg-rose-50/40 shadow-xs'
+                    ? 'border-[#8B5CF6] bg-violet-50/70 shadow-[0_4px_14px_rgba(139,92,246,0.12)]'
                     : unlocked
-                    ? 'border-slate-200 bg-white hover:bg-slate-50'
-                    : 'border-slate-100 bg-slate-50/60 opacity-80'
+                    ? 'border-violet-100/90 bg-white hover:border-violet-200 shadow-2xs'
+                    : 'border-slate-200/70 bg-white/70 opacity-85'
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center p-2 shrink-0">
+                  <div className="w-10 h-10 rounded-2xl bg-violet-50/90 border border-violet-100 flex items-center justify-center p-2 shrink-0">
                     {renderIcon(item.icon_name)}
                   </div>
                   <div>
                     <div className="flex items-center gap-1.5">
-                      <h4 className="font-display font-bold text-xs text-slate-900">{item.name}</h4>
+                      <h4 className="font-display font-bold text-xs sm:text-sm text-slate-900">{item.name}</h4>
                       {item.badge && (
-                        <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-rose-100 text-[#ff3b69] font-bold">
+                        <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-violet-100 text-[#7C3AED] font-bold">
                           {item.badge}
                         </span>
                       )}
@@ -249,21 +249,21 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                   </span>
 
                   {equipped ? (
-                    <div className="px-2.5 py-1 rounded-full bg-rose-100 text-[#ff3b69] text-xs font-bold flex items-center gap-1">
-                      <Check className="w-3 h-3" />
-                      <span>Used</span>
+                    <div className="px-3 py-1 rounded-full bg-[#8B5CF6] text-white text-xs font-bold flex items-center gap-1 shadow-2xs">
+                      <Check className="w-3 h-3 stroke-[2.5]" />
+                      <span>Active</span>
                     </div>
                   ) : unlocked ? (
                     <button
                       onClick={() => handleEquip(item)}
-                      className="px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition-all active:scale-95"
+                      className="px-3.5 py-1.5 rounded-full bg-violet-100 hover:bg-violet-200/80 text-[#6D28D9] text-xs font-bold transition-all active:scale-95"
                     >
-                      Equip
+                      Apply
                     </button>
                   ) : (
                     <button
                       onClick={() => handlePurchase(item)}
-                      className="px-3 py-1 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white text-xs font-bold shadow-xs hover:opacity-95 active:scale-95 transition-all"
+                      className="px-3.5 py-1.5 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#7C3AED] text-white text-xs font-bold shadow-xs hover:opacity-95 active:scale-95 transition-all"
                     >
                       Unlock
                     </button>
@@ -274,8 +274,8 @@ export const ShopModal: React.FC<ShopModalProps> = ({
           })}
         </div>
 
-        <div className="p-3 bg-slate-50 border-t border-slate-100 text-[11px] text-slate-500 text-center">
-          Earn coins by holding streaks, sending messages, and completing daily flow quests!
+        <div className="p-3 bg-white border-t border-violet-100/80 text-[11px] text-slate-500 text-center">
+          Earn coins by holding streaks, sending messages, and completing daily flow quests ✨
         </div>
       </div>
     </div>

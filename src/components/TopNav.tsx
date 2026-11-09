@@ -60,15 +60,15 @@ export const TopNav: React.FC<TopNavProps> = ({
     return () => window.removeEventListener('spark_precision_changed', handlePrecisionChange);
   }, []);
   return (
-    <header className="w-full bg-white/90 backdrop-blur-md border-b border-slate-100/80 px-4 sm:px-6 py-3 transition-colors">
+    <header className="w-full bg-white/95 backdrop-blur-md border-b border-violet-100/80 px-4 sm:px-6 py-3 transition-colors">
       <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
         {/* Left: Spark Logo & Name */}
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#ff3b69] to-[#fb7185] flex items-center justify-center text-white shadow-sm shadow-pink-500/25">
-            <span className="text-sm font-black">⚡</span>
+          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#8B5CF6] to-[#7C3AED] flex items-center justify-center text-white shadow-sm shadow-violet-500/25">
+            <span className="text-sm font-black">✦</span>
           </div>
           <span className="font-display font-extrabold text-lg tracking-tight text-slate-900">
-            Spark
+            spark<span className="text-[#8B5CF6]">.</span>
           </span>
         </div>
 
@@ -76,10 +76,10 @@ export const TopNav: React.FC<TopNavProps> = ({
         <div className="flex items-center gap-2">
           {/* Flame streak */}
           <div
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 text-xs font-bold"
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-violet-50 text-[#7C3AED] text-xs font-bold"
             title={`${profile.streak_days} Day Streak`}
           >
-            <Flame className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+            <Flame className="w-3.5 h-3.5 fill-[#8B5CF6] text-[#8B5CF6]" />
             <span className="font-mono-numbers">{profile.streak_days}d</span>
           </div>
 
@@ -104,7 +104,7 @@ export const TopNav: React.FC<TopNavProps> = ({
               className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-95 shadow-2xs ${
                 isPushActive
                   ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-600'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900'
+                  : 'bg-violet-50/80 hover:bg-violet-100 text-slate-600 hover:text-[#8B5CF6]'
               }`}
               title={
                 isPushActive
@@ -124,19 +124,17 @@ export const TopNav: React.FC<TopNavProps> = ({
           {onOpenDataPrecision && (
             <button
               onClick={onOpenDataPrecision}
-              className="w-7 h-7 rounded-full flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-all active:scale-95 shadow-2xs"
+              className="w-7 h-7 rounded-full flex items-center justify-center bg-violet-50/80 hover:bg-violet-100 text-slate-600 hover:text-[#8B5CF6] transition-all active:scale-95 shadow-2xs"
               title="Manage Data Precision & Storage"
             >
               <SlidersHorizontal className="w-3.5 h-3.5" />
             </button>
           )}
 
-
-
           {/* Profile Avatar */}
           <button
             onClick={onOpenProfile}
-            className="w-8 h-8 rounded-full p-[1.5px] bg-gradient-to-tr from-[#ff3b69] via-purple-400 to-[#38bdf8] transition-transform active:scale-95 shadow-sm"
+            className="w-8 h-8 rounded-full p-[1.5px] bg-gradient-to-tr from-[#8B5CF6] via-purple-400 to-[#38bdf8] transition-transform active:scale-95 shadow-sm"
             title={`${profile.display_name || profile.username} - View Account`}
           >
             <img
@@ -151,7 +149,7 @@ export const TopNav: React.FC<TopNavProps> = ({
           {onSignOut && (
             <button
               onClick={onSignOut}
-              className="w-7 h-7 rounded-full hover:bg-rose-50 text-slate-400 hover:text-[#ff3b69] flex items-center justify-center transition-colors"
+              className="w-7 h-7 rounded-full hover:bg-violet-50 text-slate-400 hover:text-[#8B5CF6] flex items-center justify-center transition-colors"
               title="Sign Out"
             >
               <LogOut className="w-3.5 h-3.5" />

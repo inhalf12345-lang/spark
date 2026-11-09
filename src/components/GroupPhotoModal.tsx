@@ -109,7 +109,7 @@ export const GroupPhotoButtonAndModal: React.FC<GroupPhotoModalProps> = ({
         <button
           type="button"
           onClick={() => setShowMenu((prev) => !prev)}
-          className="w-9 h-9 rounded-full bg-rose-50 text-[#ff3b69] flex items-center justify-center hover:bg-rose-100 active:scale-90 transition-all shrink-0"
+          className="w-9 h-9 rounded-full bg-violet-100/80 text-[#8B5CF6] flex items-center justify-center hover:bg-violet-200/70 active:scale-90 transition-all shrink-0"
           title="Send Picture to Group"
         >
           <Camera className="w-4 h-4" />
@@ -122,13 +122,13 @@ export const GroupPhotoButtonAndModal: React.FC<GroupPhotoModalProps> = ({
               className="fixed inset-0 z-30"
               onClick={() => setShowMenu(false)}
             />
-            <div className="absolute bottom-12 left-0 z-40 bg-white rounded-2xl shadow-xl border border-slate-100 p-2 flex flex-col gap-1 min-w-[160px] animate-fluid-glide">
+            <div className="absolute bottom-12 left-0 z-40 bg-white rounded-2xl shadow-xl border border-violet-100 p-2 flex flex-col gap-1 min-w-[160px] animate-fluid-glide">
               <button
                 type="button"
                 onClick={() => galleryInputRef.current?.click()}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-rose-50 text-xs font-semibold text-slate-700 hover:text-[#ff3b69] transition-colors text-left whitespace-nowrap"
+                className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-violet-50 text-xs font-semibold text-slate-700 hover:text-[#8B5CF6] transition-colors text-left whitespace-nowrap"
               >
-                <div className="w-7 h-7 rounded-full bg-rose-100 text-[#ff3b69] flex items-center justify-center shrink-0">
+                <div className="w-7 h-7 rounded-full bg-violet-100 text-[#8B5CF6] flex items-center justify-center shrink-0">
                   <ImageIcon className="w-3.5 h-3.5" />
                 </div>
                 <span>Photo Gallery</span>
@@ -137,7 +137,7 @@ export const GroupPhotoButtonAndModal: React.FC<GroupPhotoModalProps> = ({
               <button
                 type="button"
                 onClick={() => cameraInputRef.current?.click()}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-rose-50 text-xs font-semibold text-slate-700 hover:text-[#ff3b69] transition-colors text-left whitespace-nowrap"
+                className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-violet-50 text-xs font-semibold text-slate-700 hover:text-[#8B5CF6] transition-colors text-left whitespace-nowrap"
               >
                 <div className="w-7 h-7 rounded-full bg-sky-100 text-sky-600 flex items-center justify-center shrink-0">
                   <Camera className="w-3.5 h-3.5" />
@@ -200,14 +200,14 @@ export const GroupPhotoButtonAndModal: React.FC<GroupPhotoModalProps> = ({
                   }
                 }}
                 placeholder="Add a caption..."
-                className="flex-1 py-3 px-4 rounded-full bg-white/10 border border-white/15 text-xs sm:text-sm text-white placeholder-slate-400 focus:outline-none focus:border-[#ff3b69] focus:bg-white/15 transition-all"
+                className="flex-1 py-3 px-4 rounded-full bg-white/10 border border-white/15 text-xs sm:text-sm text-white placeholder-slate-400 focus:outline-none focus:border-[#8B5CF6] focus:bg-white/15 transition-all"
               />
 
               <button
                 type="button"
                 disabled={isSending}
                 onClick={handleConfirmSend}
-                className="w-11 h-11 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white flex items-center justify-center shadow-lg shadow-pink-500/30 hover:opacity-95 active:scale-90 transition-all shrink-0 disabled:opacity-50"
+                className="w-11 h-11 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#7C3AED] text-white flex items-center justify-center shadow-lg shadow-violet-500/30 hover:opacity-95 active:scale-90 transition-all shrink-0 disabled:opacity-50"
                 title="Send Photo to Group"
               >
                 {isSending ? (
