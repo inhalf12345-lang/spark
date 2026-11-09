@@ -36,7 +36,9 @@ jobs:
           git add public/gh-pages-bundle/app.js public/gh-pages-bundle/app.css sw.js
           if ! git diff --cached --quiet; then
             git commit -m "chore: update prebuilt gh-pages-bundle from latest source [skip ci]"
-            git pull --rebase origin ${{ github.ref_name }}
+            git checkout -- .
+            git pull --rebase --autostash origin ${{ github.ref_name }}
             git push origin HEAD:${{ github.ref_name }}
           fi
+
 
