@@ -11,6 +11,10 @@ import {
 import {
   encryptE2EEMessage,
   decryptE2EEMessage,
+  deriveConversationKey,
+  fetchRecipientPublicKey,
+  getExistingDeviceIdentityKeyPair,
+  getOrCreateDeviceIdentityKeyPair,
   E2EE_VERSION,
 } from './cryptoService';
 import {
@@ -1650,7 +1654,7 @@ export async function fetchRealMessages(
           displayContent = m.content;
           isE2EE = false;
         } else {
-          displayContent = '🔒 Encrypted message (key establishing...)';
+          displayContent = '🔒 Unable to decrypt this message';
           decryptionError = true;
         }
       } else {
@@ -1759,11 +1763,32 @@ export async function sendRealMessageToSupabase(
   let iv: string | undefined;
   let isE2EE = false;
 
-  if (conversationKey && !mediaUrl) {
-    const encrypted = await encryptE2EEMessage(cleanContent, conversationKey);
-    ciphertext = encrypted.ciphertext;
-    iv = encrypted.iv;
-    isE2EE = true;
+  if (validReceiverUuid && !mediaUrl) {
+    // Rule 5: Always fetch the recipient's CURRENT public key from user_crypto_keys before encrypting.
+    // Do not use a key cached from earlier.
+    let freshEncryptionKey: CryptoKey | null = null;
+    try {
+      const currentRecipientPubKey = await fetchRecipientPublicKey(validReceiverUuid);
+      if (currentRecipientPubKey) {
+        const localKeyPair =
+          (await getExistingDeviceIdentityKeyPair(actualSenderId)) ||
+          (await getOrCreateDeviceIdentityKeyPair(actualSenderId));
+        freshEncryptionKey = await deriveConversationKey(
+          localKeyPair.privateKey,
+          currentRecipientPubKey,
+          validConvUuid
+        );
+      }
+    } catch (keyErr) {
+      console.warn('Could not derive fresh encryption key for message:', keyErr);
+    }
+
+    if (freshEncryptionKey) {
+      const encrypted = await encryptE2EEMessage(cleanContent, freshEncryptionKey);
+      ciphertext = encrypted.ciphertext;
+      iv = encrypted.iv;
+      isE2EE = true;
+    }
   }
 
   const baseMessage: ChatMessage = {

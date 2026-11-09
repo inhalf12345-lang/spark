@@ -90,6 +90,22 @@ export interface VerifiedPeerKeyBundleResult {
 // In-memory caches (purged on logout)
 const conversationKeyCache = new Map<string, CryptoKey>();
 const directionalCallKeyCache = new Map<string, CryptoKey>();
+const inflightKeyPairPromises = new Map<string, Promise<DeviceIdentityKeyPairResult>>();
+const inflightKeySyncPromises = new Map<string, Promise<void>>();
+const pendingNewKeyConfirmPromises = new Map<string, Promise<boolean>>();
+const declinedNewKeyOnDeviceUsers = new Set<string>();
+
+export interface DeviceIdentityKeyPairResult {
+  publicKey: CryptoKey;
+  privateKey: CryptoKey;
+  publicJwk: PublishedUserCryptoKeyBundle;
+  signingPrivateKey: CryptoKey;
+  verificationPublicKey: CryptoKey;
+  ecdhFingerprint: string;
+  ecdsaFingerprint: string;
+  keyRotationVersion: number;
+  publishedBundle: PublishedUserCryptoKeyBundle;
+}
 
 // Fallback stores used ONLY in headless/Node test environments where window.indexedDB is absent
 const memoryDeviceKeyStore = new Map<string, StoredDeviceKeyMaterial>();
@@ -404,14 +420,25 @@ async function generateSeparatedNonExtractableDeviceKeys(
   };
 }
 
+function formatDeviceKeyPairOutput(mat: StoredDeviceKeyMaterial): DeviceIdentityKeyPairResult {
+  return {
+    publicKey: mat.ecdhPublicKey,
+    privateKey: mat.ecdhPrivateKey,
+    publicJwk: mat.publishedBundle,
+    signingPrivateKey: mat.ecdsaSigningPrivateKey,
+    verificationPublicKey: mat.ecdsaVerifyPublicKey,
+    ecdhFingerprint: mat.ecdhFingerprint,
+    ecdsaFingerprint: mat.ecdsaFingerprint,
+    keyRotationVersion: mat.keyRotationVersion,
+    publishedBundle: mat.publishedBundle,
+  };
+}
+
 /**
- * Validates whether a stored IndexedDB record has valid, non-extractable separated ECDH and ECDSA CryptoKey handles
- * and NO extractable `privateKeyJwk` property.
+ * Validates whether a stored IndexedDB record has valid separated ECDH and ECDSA CryptoKey handles.
  */
 function isValidStoredNonExtractableRecord(record: any, expectedUserId: string): record is StoredDeviceKeyMaterial {
   if (!record || record.userId !== expectedUserId) return false;
-  // Reject any legacy v1 record that stored extractable privateKeyJwk JSON
-  if ('privateKeyJwk' in record && record.privateKeyJwk) return false;
   if (
     !record.ecdhPrivateKey ||
     !record.ecdhPublicKey ||
@@ -421,14 +448,6 @@ function isValidStoredNonExtractableRecord(record: any, expectedUserId: string):
   ) {
     return false;
   }
-  // Both private keys MUST be non-extractable CryptoKey handles
-  if (
-    record.ecdhPrivateKey.extractable !== false ||
-    record.ecdsaSigningPrivateKey.extractable !== false
-  ) {
-    return false;
-  }
-  // Ensure strict algorithm separation on the CryptoKey handles
   if (
     record.ecdhPrivateKey.algorithm?.name !== 'ECDH' ||
     record.ecdsaSigningPrivateKey.algorithm?.name !== 'ECDSA'
@@ -439,89 +458,483 @@ function isValidStoredNonExtractableRecord(record: any, expectedUserId: string):
 }
 
 /**
- * Retrieves the device's separated ECDH P-256 and ECDSA P-256 non-extractable key pairs from IndexedDB,
- * or generates a fresh v2 pair (migrating and purging any legacy v1 `privateKeyJwk` record).
+ * Preserves an existing local ECDH private key from a legacy record without generating a new ECDH key pair.
+ */
+async function preserveExistingLocalRecordIfPresent(
+  record: any,
+  userId: string
+): Promise<StoredDeviceKeyMaterial | null> {
+  if (!record) return null;
+  if (isValidStoredNonExtractableRecord(record, userId)) {
+    return record;
+  }
+
+  const subtle = getSubtleCrypto();
+  let ecdhPrivateKey: CryptoKey | null =
+    record.ecdhPrivateKey?.algorithm?.name === 'ECDH'
+      ? record.ecdhPrivateKey
+      : record.privateKey?.algorithm?.name === 'ECDH'
+      ? record.privateKey
+      : null;
+
+  let ecdhPublicKey: CryptoKey | null =
+    record.ecdhPublicKey?.algorithm?.name === 'ECDH'
+      ? record.ecdhPublicKey
+      : record.publicKey?.algorithm?.name === 'ECDH'
+      ? record.publicKey
+      : null;
+
+  let ecdhPublicJwk: JsonWebKey | null =
+    record.ecdhPublicJwk?.x && record.ecdhPublicJwk?.y
+      ? record.ecdhPublicJwk
+      : record.publicKeyJwk?.x && record.publicKeyJwk?.y
+      ? record.publicKeyJwk
+      : record.publishedBundle?.x && record.publishedBundle?.y
+      ? {
+          kty: 'EC',
+          crv: 'P-256',
+          x: record.publishedBundle.x,
+          y: record.publishedBundle.y,
+          ext: true,
+        }
+      : null;
+
+  if (!ecdhPrivateKey && record.privateKeyJwk?.d && record.privateKeyJwk?.x && record.privateKeyJwk?.y) {
+    try {
+      ecdhPrivateKey = await subtle.importKey(
+        'jwk',
+        record.privateKeyJwk,
+        { name: 'ECDH', namedCurve: 'P-256' },
+        false,
+        ['deriveKey', 'deriveBits']
+      );
+      if (!ecdhPublicJwk) {
+        ecdhPublicJwk = {
+          kty: 'EC',
+          crv: 'P-256',
+          x: record.privateKeyJwk.x,
+          y: record.privateKeyJwk.y,
+          ext: true,
+        };
+      }
+    } catch {
+      ecdhPrivateKey = null;
+    }
+  }
+
+  if (!ecdhPrivateKey) {
+    return null;
+  }
+
+  if (!ecdhPublicJwk && ecdhPublicKey) {
+    try {
+      const exported = await subtle.exportKey('jwk', ecdhPublicKey);
+      if (exported.x && exported.y) {
+        ecdhPublicJwk = { kty: 'EC', crv: 'P-256', x: exported.x, y: exported.y, ext: true };
+      }
+    } catch {}
+  }
+
+  if (!ecdhPublicKey && ecdhPublicJwk) {
+    try {
+      ecdhPublicKey = await importEcdhPublicKeyFromJwk(ecdhPublicJwk);
+    } catch {}
+  }
+
+  if (!ecdhPublicKey || !ecdhPublicJwk?.x || !ecdhPublicJwk?.y) {
+    return null;
+  }
+
+  let ecdsaSigningPrivateKey: CryptoKey | null =
+    record.ecdsaSigningPrivateKey?.algorithm?.name === 'ECDSA'
+      ? record.ecdsaSigningPrivateKey
+      : null;
+  let ecdsaVerifyPublicKey: CryptoKey | null =
+    record.ecdsaVerifyPublicKey?.algorithm?.name === 'ECDSA'
+      ? record.ecdsaVerifyPublicKey
+      : null;
+  let ecdsaPublicJwk: JsonWebKey | null =
+    record.ecdsaPublicJwk?.x && record.ecdsaPublicJwk?.y ? record.ecdsaPublicJwk : null;
+
+  if (!ecdsaSigningPrivateKey || !ecdsaVerifyPublicKey || !ecdsaPublicJwk) {
+    const ecdsaPair = await subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign', 'verify']
+    );
+    const rawEcdsaPub = await subtle.exportKey('jwk', ecdsaPair.publicKey);
+    ecdsaSigningPrivateKey = ecdsaPair.privateKey;
+    ecdsaVerifyPublicKey = ecdsaPair.publicKey;
+    ecdsaPublicJwk = {
+      kty: 'EC',
+      crv: 'P-256',
+      x: rawEcdsaPub.x,
+      y: rawEcdsaPub.y,
+      ext: true,
+    };
+  }
+
+  const keyRotationVersion =
+    typeof record.keyRotationVersion === 'number' && record.keyRotationVersion >= 1
+      ? record.keyRotationVersion
+      : 1;
+
+  const [ecdhFingerprint, ecdsaFingerprint] = await Promise.all([
+    computePublicKeyFingerprint(ecdhPublicJwk, 'keyAgreement'),
+    computePublicKeyFingerprint(ecdsaPublicJwk, 'digitalSignature'),
+  ]);
+
+  const nowIso = new Date().toISOString();
+  const bindingCanonical = serializeIdentityBindingCanonical({
+    userId,
+    keyRotationVersion,
+    ecdhFingerprint,
+    ecdsaFingerprint,
+    issuedAt: nowIso,
+  });
+
+  const bindingSigBytes = await subtle.sign(
+    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+    ecdsaSigningPrivateKey,
+    new TextEncoder().encode(bindingCanonical)
+  );
+
+  const publishedBundle: PublishedUserCryptoKeyBundle = {
+    kty: 'EC',
+    crv: 'P-256',
+    x: ecdhPublicJwk.x,
+    y: ecdhPublicJwk.y,
+    ext: true,
+    bundleVersion: KEY_BUNDLE_VERSION,
+    algorithm: 'ECDH-P256+ECDSA-P256-v2',
+    userId,
+    keyRotationVersion,
+    ecdhPublicKey: {
+      kty: 'EC',
+      crv: 'P-256',
+      x: ecdhPublicJwk.x,
+      y: ecdhPublicJwk.y,
+      alg: 'ECDH-ES+HKDF-256',
+      keyUsage: 'keyAgreement',
+      fingerprint: ecdhFingerprint,
+    },
+    ecdsaSigningPublicKey: {
+      kty: 'EC',
+      crv: 'P-256',
+      x: ecdsaPublicJwk.x!,
+      y: ecdsaPublicJwk.y!,
+      alg: 'ES256',
+      keyUsage: 'digitalSignature',
+      fingerprint: ecdsaFingerprint,
+    },
+    identityBinding: {
+      version: IDENTITY_BINDING_VERSION,
+      userId,
+      keyRotationVersion,
+      ecdhFingerprint,
+      ecdsaFingerprint,
+      issuedAt: nowIso,
+      signature: bufferToBase64(bindingSigBytes),
+    },
+  };
+
+  return {
+    userId,
+    keyRotationVersion,
+    ecdhPrivateKey,
+    ecdhPublicKey,
+    ecdsaSigningPrivateKey,
+    ecdsaVerifyPublicKey,
+    ecdhPublicJwk,
+    ecdsaPublicJwk,
+    ecdhFingerprint,
+    ecdsaFingerprint,
+    publishedBundle,
+    createdAt: record.createdAt || nowIso,
+    rotatedAt: record.rotatedAt || nowIso,
+  };
+}
+
+/**
+ * Reads an existing device identity key pair from local storage without ever generating a new key pair.
+ */
+export async function getExistingDeviceIdentityKeyPair(
+  userId: string
+): Promise<DeviceIdentityKeyPairResult | null> {
+  if (!userId || !isWebCryptoAvailable()) return null;
+
+  if (!isIndexedDBAvailable()) {
+    const existing = memoryDeviceKeyStore.get(userId);
+    if (!existing) return null;
+    const preserved = await preserveExistingLocalRecordIfPresent(existing, userId);
+    if (!preserved) return null;
+    memoryDeviceKeyStore.set(userId, preserved);
+    return formatDeviceKeyPairOutput(preserved);
+  }
+
+  const db = await openDeviceKeyDatabase();
+  const rawRecord = await new Promise<any>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const getReq = tx.objectStore(STORE_NAME).get(userId);
+    getReq.onsuccess = () => resolve(getReq.result || null);
+    getReq.onerror = () => reject(getReq.error);
+  });
+
+  if (!rawRecord) return null;
+  if (isValidStoredNonExtractableRecord(rawRecord, userId)) {
+    return formatDeviceKeyPairOutput(rawRecord);
+  }
+
+  const upgraded = await preserveExistingLocalRecordIfPresent(rawRecord, userId);
+  if (!upgraded) return null;
+
+  await new Promise<void>((resolve, reject) => {
+    const writeTx = db.transaction(STORE_NAME, 'readwrite');
+    writeTx.objectStore(STORE_NAME).put(upgraded);
+    writeTx.oncomplete = () => resolve();
+    writeTx.onerror = () => reject(writeTx.error);
+  });
+
+  return formatDeviceKeyPairOutput(upgraded);
+}
+
+/**
+ * Fetches the user's current public_key entry in `user_crypto_keys` from the server.
+ */
+async function fetchServerUserPublicKeyRaw(userId: string): Promise<{
+  exists: boolean;
+  publicKey: any | null;
+  errorOccurred: boolean;
+}> {
+  if (typeof window === 'undefined' && headlessTestRegistryEnabled) {
+    const mem = memoryPublishedSupabaseKeys.get(userId) || null;
+    return { exists: Boolean(mem), publicKey: mem, errorOccurred: false };
+  }
+
+  if (!isSupabaseConfigured()) {
+    return { exists: false, publicKey: null, errorOccurred: false };
+  }
+
+  const supabase = getSupabase();
+  if (!supabase) {
+    return { exists: false, publicKey: null, errorOccurred: false };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('user_crypto_keys')
+      .select('public_key')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      return { exists: false, publicKey: null, errorOccurred: true };
+    }
+
+    return {
+      exists: Boolean(data?.public_key),
+      publicKey: data?.public_key || null,
+      errorOccurred: false,
+    };
+  } catch {
+    return { exists: false, publicKey: null, errorOccurred: true };
+  }
+}
+
+function extractEcdhCoordinates(rawKey: any): { x: string; y: string } | null {
+  if (!rawKey || typeof rawKey !== 'object') return null;
+  const source =
+    rawKey.ecdhPublicKey && typeof rawKey.ecdhPublicKey === 'object'
+      ? rawKey.ecdhPublicKey
+      : rawKey;
+  if (typeof source.x === 'string' && source.x && typeof source.y === 'string' && source.y) {
+    return { x: source.x, y: source.y };
+  }
+  return null;
+}
+
+/**
+ * Compares the server's stored public key with this device's own public key.
+ */
+export function doesServerPublicKeyMatchLocal(
+  serverPublicKey: any,
+  localBundle: PublishedUserCryptoKeyBundle
+): boolean {
+  const serverEcdh = extractEcdhCoordinates(serverPublicKey);
+  const localEcdh = extractEcdhCoordinates(localBundle);
+  if (!serverEcdh || !localEcdh) return false;
+  if (serverEcdh.x !== localEcdh.x || serverEcdh.y !== localEcdh.y) {
+    return false;
+  }
+
+  if (
+    serverPublicKey?.ecdsaSigningPublicKey?.x &&
+    serverPublicKey?.ecdsaSigningPublicKey?.y &&
+    localBundle?.ecdsaSigningPublicKey?.x &&
+    localBundle?.ecdsaSigningPublicKey?.y
+  ) {
+    if (
+      serverPublicKey.ecdsaSigningPublicKey.x !== localBundle.ecdsaSigningPublicKey.x ||
+      serverPublicKey.ecdsaSigningPublicKey.y !== localBundle.ecdsaSigningPublicKey.y
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Shows a clear message when this device has no private key but the server already has a public key
+ * for this user, and resolves true ONLY if the user explicitly confirms generating a new key.
+ */
+function confirmNewDeviceKeyGeneration(userId: string): Promise<boolean> {
+  if (pendingNewKeyConfirmPromises.has(userId)) {
+    return pendingNewKeyConfirmPromises.get(userId)!;
+  }
+
+  const promise = new Promise<boolean>((resolve) => {
+    if (typeof document === 'undefined' || !document.body) {
+      resolve(false);
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.65);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,-apple-system,sans-serif;';
+
+    const card = document.createElement('div');
+    card.style.cssText =
+      'max-width:400px;width:100%;background:#ffffff;border-radius:20px;padding:24px;box-shadow:0 20px 45px rgba(15,23,42,0.25);border:1px solid #e2e8f0;color:#0f172a;';
+
+    const title = document.createElement('h3');
+    title.textContent = 'Encryption Key Missing on This Device';
+    title.style.cssText = 'margin:0 0 10px 0;font-size:17px;font-weight:700;color:#0f172a;';
+
+    const body = document.createElement('p');
+    body.textContent =
+      'This device does not have your encryption private key, so older encrypted messages cannot be read on this device. Do you want to generate a new encryption key for this device?';
+    body.style.cssText = 'margin:0 0 20px 0;font-size:14px;line-height:1.5;color:#475569;';
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText =
+      'padding:10px 16px;border-radius:12px;border:1px solid #cbd5e1;background:#f8fafc;color:#334155;font-size:13px;font-weight:600;cursor:pointer;';
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.textContent = 'Generate New Key';
+    confirmBtn.style.cssText =
+      'padding:10px 16px;border-radius:12px;border:none;background:#7c3aed;color:#ffffff;font-size:13px;font-weight:700;cursor:pointer;';
+
+    const cleanup = (confirmed: boolean) => {
+      try {
+        overlay.remove();
+      } catch {}
+      resolve(confirmed);
+    };
+
+    cancelBtn.onclick = () => cleanup(false);
+    confirmBtn.onclick = () => cleanup(true);
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(confirmBtn);
+    card.appendChild(title);
+    card.appendChild(body);
+    card.appendChild(btnRow);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }).finally(() => {
+    pendingNewKeyConfirmPromises.delete(userId);
+  });
+
+  pendingNewKeyConfirmPromises.set(userId, promise);
+  return promise;
+}
+
+/**
+ * Retrieves the device's separated ECDH P-256 and ECDSA P-256 key pairs from IndexedDB.
+ * - Rule 2: If a private key already exists on this device, NEVER generate a new key pair.
+ * - Rule 4: If this device has no private key but the server already has a public key for this user,
+ *   do NOT silently generate a new one and overwrite; show a clear message that older messages can't
+ *   be read on this device, and generate a new key only after the user confirms.
  */
 export async function getOrCreateDeviceIdentityKeyPair(
   userId: string
-): Promise<{
-  publicKey: CryptoKey;
-  privateKey: CryptoKey;
-  publicJwk: PublishedUserCryptoKeyBundle;
-  signingPrivateKey: CryptoKey;
-  verificationPublicKey: CryptoKey;
-  ecdhFingerprint: string;
-  ecdsaFingerprint: string;
-  keyRotationVersion: number;
-  publishedBundle: PublishedUserCryptoKeyBundle;
-}> {
+): Promise<DeviceIdentityKeyPairResult> {
   if (!isWebCryptoAvailable()) {
     throw new Error('WebCrypto API is not available in this browser context.');
   }
 
-  const formatOutput = (mat: StoredDeviceKeyMaterial) => ({
-    publicKey: mat.ecdhPublicKey,
-    privateKey: mat.ecdhPrivateKey,
-    publicJwk: mat.publishedBundle,
-    signingPrivateKey: mat.ecdsaSigningPrivateKey,
-    verificationPublicKey: mat.ecdsaVerifyPublicKey,
-    ecdhFingerprint: mat.ecdhFingerprint,
-    ecdsaFingerprint: mat.ecdsaFingerprint,
-    keyRotationVersion: mat.keyRotationVersion,
-    publishedBundle: mat.publishedBundle,
-  });
-
-  if (!isIndexedDBAvailable()) {
-    const existing = memoryDeviceKeyStore.get(userId);
-    if (existing && isValidStoredNonExtractableRecord(existing, userId)) {
-      return formatOutput(existing);
-    }
-    const fresh = await generateSeparatedNonExtractableDeviceKeys(userId, 1);
-    memoryDeviceKeyStore.set(userId, fresh);
-    return formatOutput(fresh);
+  if (inflightKeyPairPromises.has(userId)) {
+    return inflightKeyPairPromises.get(userId)!;
   }
 
-  const db = await openDeviceKeyDatabase();
+  const task = (async (): Promise<DeviceIdentityKeyPairResult> => {
+    // 1. If a private key already exists on this device, NEVER generate a new key pair.
+    const existingLocal = await getExistingDeviceIdentityKeyPair(userId);
+    if (existingLocal) {
+      return existingLocal;
+    }
 
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const store = tx.objectStore(STORE_NAME);
-    const getReq = store.get(userId);
+    // 2. No private key exists on this device. Check if the server already has a public key for this user.
+    const serverStatus = await fetchServerUserPublicKeyRaw(userId);
+    if (serverStatus.errorOccurred) {
+      throw new Error(
+        'Could not verify existing public key on server; refusing to generate a new key pair.'
+      );
+    }
 
-    getReq.onsuccess = async () => {
-      const existing = getReq.result;
-
-      if (isValidStoredNonExtractableRecord(existing, userId)) {
-        resolve(formatOutput(existing));
-        return;
-      }
-
-      // Either no record exists or a legacy v1 record with extractable privateKeyJwk was found.
-      // Generate fresh non-extractable separated ECDH + ECDSA CryptoKeys and overwrite the store entry.
-      try {
-        const nextVersion =
-          existing && typeof existing.keyRotationVersion === 'number'
-            ? existing.keyRotationVersion + 1
-            : 1;
-        const freshMaterial = await generateSeparatedNonExtractableDeviceKeys(
-          userId,
-          nextVersion,
-          existing?.createdAt
+    let nextVersion = 1;
+    if (serverStatus.exists && serverStatus.publicKey) {
+      if (declinedNewKeyOnDeviceUsers.has(userId)) {
+        throw new Error(
+          'Older messages cannot be read on this device because the private key is not present on this device.'
         );
-
-        const writeTx = db.transaction(STORE_NAME, 'readwrite');
-        const writeStore = writeTx.objectStore(STORE_NAME);
-        writeStore.put(freshMaterial);
-
-        writeTx.oncomplete = () => resolve(formatOutput(freshMaterial));
-        writeTx.onerror = () => reject(writeTx.error);
-      } catch (genErr) {
-        reject(genErr);
       }
-    };
 
-    getReq.onerror = () => reject(getReq.error);
+      const confirmed = await confirmNewDeviceKeyGeneration(userId);
+      if (!confirmed) {
+        declinedNewKeyOnDeviceUsers.add(userId);
+        throw new Error(
+          'Older messages cannot be read on this device. New key generation was cancelled by user.'
+        );
+      }
+
+      const serverVersion = Number(serverStatus.publicKey?.keyRotationVersion);
+      nextVersion = Number.isInteger(serverVersion) && serverVersion >= 1 ? serverVersion + 1 : 2;
+    }
+
+    const freshMaterial = await generateSeparatedNonExtractableDeviceKeys(userId, nextVersion);
+
+    if (!isIndexedDBAvailable()) {
+      memoryDeviceKeyStore.set(userId, freshMaterial);
+      return formatDeviceKeyPairOutput(freshMaterial);
+    }
+
+    const db = await openDeviceKeyDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const writeTx = db.transaction(STORE_NAME, 'readwrite');
+      writeTx.objectStore(STORE_NAME).put(freshMaterial);
+      writeTx.oncomplete = () => resolve();
+      writeTx.onerror = () => reject(writeTx.error);
+    });
+
+    if (serverStatus.exists) {
+      await syncPublicKeyToSupabase(userId, freshMaterial.publishedBundle);
+    }
+
+    return formatDeviceKeyPairOutput(freshMaterial);
+  })().finally(() => {
+    inflightKeyPairPromises.delete(userId);
   });
+
+  inflightKeyPairPromises.set(userId, task);
+  return task;
 }
 
 /**
@@ -598,55 +1011,95 @@ export function enableHeadlessTestKeyRegistry(enabled: boolean): void {
 
 /**
  * Publishes the current user's separated public key bundle (ECDH + ECDSA + signed identityBinding) to Supabase.
- * Private keys are non-extractable and never leave local device storage.
+ * Rule 3: Only upsert the public key to Supabase if the server has no key for this user,
+ * or the server's key differs from this device's own public key. If they match, make no write.
  */
 export async function syncPublicKeyToSupabase(
   userId: string,
-  publicKeyMaterial: JsonWebKey | PublishedUserCryptoKeyBundle
+  publicKeyMaterial?: JsonWebKey | PublishedUserCryptoKeyBundle
 ): Promise<void> {
-  let bundleToPublish: PublishedUserCryptoKeyBundle;
+  if (!userId) return;
 
-  if (
-    publicKeyMaterial &&
-    'bundleVersion' in publicKeyMaterial &&
-    publicKeyMaterial.bundleVersion === KEY_BUNDLE_VERSION
-  ) {
-    bundleToPublish = publicKeyMaterial as PublishedUserCryptoKeyBundle;
-  } else {
-    const local = await getOrCreateDeviceIdentityKeyPair(userId);
-    bundleToPublish = local.publishedBundle;
+  if (inflightKeySyncPromises.has(userId)) {
+    return inflightKeySyncPromises.get(userId)!;
   }
 
-  if (typeof window === 'undefined' && headlessTestRegistryEnabled) {
-    memoryPublishedSupabaseKeys.set(userId, bundleToPublish);
-    return;
-  }
+  const syncTask = (async () => {
+    let bundleToPublish: PublishedUserCryptoKeyBundle | null = null;
 
-  if (!isSupabaseConfigured()) return;
-  const supabase = getSupabase();
-  if (!supabase) return;
-
-  try {
-    const payload = {
-      user_id: userId,
-      public_key: bundleToPublish,
-      algorithm: 'ECDH-P256+ECDSA-P256-v2',
-      updated_at: new Date().toISOString(),
-    };
-
-    const { error } = await supabase
-      .from('user_crypto_keys')
-      .upsert(payload, { onConflict: 'user_id' });
-
-    if (error) {
-      console.warn(
-        'Could not sync public key bundle to Supabase (run SQL migration if table is missing):',
-        error.message
-      );
+    if (
+      publicKeyMaterial &&
+      'bundleVersion' in publicKeyMaterial &&
+      publicKeyMaterial.bundleVersion === KEY_BUNDLE_VERSION
+    ) {
+      bundleToPublish = publicKeyMaterial as PublishedUserCryptoKeyBundle;
+    } else {
+      const existingLocal = await getExistingDeviceIdentityKeyPair(userId);
+      if (!existingLocal) {
+        return;
+      }
+      bundleToPublish = existingLocal.publishedBundle;
     }
-  } catch (err) {
-    console.warn('Error in syncPublicKeyToSupabase:', err);
-  }
+
+    if (typeof window === 'undefined' && headlessTestRegistryEnabled) {
+      const existingMem = memoryPublishedSupabaseKeys.get(userId);
+      if (existingMem && doesServerPublicKeyMatchLocal(existingMem, bundleToPublish)) {
+        return;
+      }
+      memoryPublishedSupabaseKeys.set(userId, bundleToPublish);
+      return;
+    }
+
+    if (!isSupabaseConfigured()) return;
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    try {
+      const { data: existingRow, error: selectError } = await supabase
+        .from('user_crypto_keys')
+        .select('public_key')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (selectError) {
+        console.warn('Could not read existing public key from Supabase:', selectError.message);
+        return;
+      }
+
+      // If the server already has a key for this user and it matches this device's own public key, make no write.
+      if (
+        existingRow?.public_key &&
+        doesServerPublicKeyMatchLocal(existingRow.public_key, bundleToPublish)
+      ) {
+        return;
+      }
+
+      const payload = {
+        user_id: userId,
+        public_key: bundleToPublish,
+        algorithm: 'ECDH-P256+ECDSA-P256-v2',
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('user_crypto_keys')
+        .upsert(payload, { onConflict: 'user_id' });
+
+      if (error) {
+        console.warn(
+          'Could not sync public key bundle to Supabase (run SQL migration if table is missing):',
+          error.message
+        );
+      }
+    } catch (err) {
+      console.warn('Error in syncPublicKeyToSupabase:', err);
+    }
+  })().finally(() => {
+    inflightKeySyncPromises.delete(userId);
+  });
+
+  inflightKeySyncPromises.set(userId, syncTask);
+  return syncTask;
 }
 
 /**
@@ -1197,18 +1650,6 @@ export async function deriveConversationKey(
   conversationId: string
 ): Promise<CryptoKey> {
   const subtle = getSubtleCrypto();
-  let peerFingerprint = 'default';
-  try {
-    const exportedPeer = await subtle.exportKey('jwk', otherPublicKey);
-    if (exportedPeer.x && exportedPeer.y) {
-      peerFingerprint = `${exportedPeer.x}.${exportedPeer.y}`;
-    }
-  } catch {}
-
-  const cacheKey = `${conversationId}:${peerFingerprint}`;
-  if (conversationKeyCache.has(cacheKey)) {
-    return conversationKeyCache.get(cacheKey)!;
-  }
 
   const sharedBits = await subtle.deriveBits(
     { name: 'ECDH', public: otherPublicKey },
@@ -1228,7 +1669,7 @@ export async function deriveConversationKey(
   const salt = encoder.encode(`Spark-Salt-${conversationId}`);
   const info = encoder.encode('Spark-E2EE-v1-ConversationAESKey');
 
-  const conversationKey = await subtle.deriveKey(
+  return subtle.deriveKey(
     {
       name: 'HKDF',
       hash: 'SHA-256',
@@ -1240,9 +1681,6 @@ export async function deriveConversationKey(
     false,
     ['encrypt', 'decrypt']
   );
-
-  conversationKeyCache.set(cacheKey, conversationKey);
-  return conversationKey;
 }
 
 /**
@@ -1432,6 +1870,10 @@ export async function decryptE2EEMessage(
 export function purgeCryptoSessionMemory(): void {
   conversationKeyCache.clear();
   directionalCallKeyCache.clear();
+  inflightKeyPairPromises.clear();
+  inflightKeySyncPromises.clear();
+  pendingNewKeyConfirmPromises.clear();
+  declinedNewKeyOnDeviceUsers.clear();
   memoryDeviceKeyStore.clear();
   memoryPeerPinStore.clear();
   memoryPublishedSupabaseKeys.clear();

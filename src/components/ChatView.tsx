@@ -51,6 +51,7 @@ import {
   DataPrecisionSettings,
 } from '../lib/precisionService';
 import {
+  getExistingDeviceIdentityKeyPair,
   getOrCreateDeviceIdentityKeyPair,
   fetchRecipientPublicKey,
   deriveConversationKey,
@@ -533,7 +534,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       decryptionError = true;
                     }
                   } else {
-                    displayContent = '🔒 Encrypted message (key unavailable)';
+                    displayContent = '🔒 Unable to decrypt this message';
                     decryptionError = true;
                   }
                 }
@@ -718,12 +719,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
           const { data: sessionData } = await supabase.auth.getSession();
           const verifiedSenderId = sessionData.session?.user?.id || profile.id;
 
+          let latestConversationKey: CryptoKey | null = null;
+          if (!friend.is_group && !uploadedMediaPath) {
+            try {
+              const currentRecipientPubKey = await fetchRecipientPublicKey(friend.id);
+              if (currentRecipientPubKey) {
+                const localKeyPair =
+                  (await getExistingDeviceIdentityKeyPair(verifiedSenderId)) ||
+                  (await getOrCreateDeviceIdentityKeyPair(verifiedSenderId));
+                latestConversationKey = await deriveConversationKey(
+                  localKeyPair.privateKey,
+                  currentRecipientPubKey,
+                  activeConvId
+                );
+                conversationKeyRef.current = latestConversationKey;
+                setConversationKey(latestConversationKey);
+              }
+            } catch {}
+          }
+
           const savedMessage = await sendRealMessageToSupabase(
             activeConvId,
             verifiedSenderId,
             friend.is_group ? '' : friend.id,
             trimmed,
-            friend.is_group ? null : (conversationKeyRef.current || conversationKey),
+            latestConversationKey,
             uploadedMediaPath
           );
           playSendSound();
