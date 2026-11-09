@@ -272,19 +272,50 @@ self.addEventListener('push', (event) => {
     }
   }
 
-  const title = payload.title || 'Spark';
+  const rawTitle = payload.title || 'Spark';
   const conversationId = payload.conversationId || payload.conversation_id || '';
   const isGroup = Boolean(payload.isGroup || payload.is_group);
-  const body =
+  const rawBody =
     payload.body ||
     (isGroup ? 'New message in your group.' : 'You received a new message.');
-  const tag = payload.tag || (conversationId ? `spark-conv-${conversationId}` : 'spark-msg');
+
+  const isCallInvite = Boolean(
+    payload.isCallInvite ||
+      payload.is_call_invite ||
+      payload.type === 'call-invite' ||
+      payload.type === 'group-call-invite' ||
+      /incoming voice call|started a voice call|started a group voice call/i.test(
+        `${rawTitle} ${rawBody}`
+      )
+  );
+
+  const title =
+    isCallInvite && !rawTitle.includes('📞') ? `📞 ${rawTitle}` : rawTitle;
+  const body = isCallInvite
+    ? rawBody.includes('Tap to')
+      ? rawBody
+      : isGroup
+      ? `${rawBody} — Tap to join the group voice call.`
+      : `${rawBody} — Tap to open Spark and answer.`
+    : rawBody;
+
+  const tag =
+    payload.tag ||
+    (isCallInvite
+      ? `spark-call-${conversationId || 'incoming'}`
+      : conversationId
+      ? `spark-conv-${conversationId}`
+      : 'spark-msg');
   const icon = payload.icon || resolveScopeUrl('public/pwa-192x192.png');
   const badge = payload.badge || resolveScopeUrl('public/pwa-192x192.png');
   const targetUrl = payload.url
     ? resolveScopeUrl(payload.url)
     : conversationId
-    ? resolveScopeUrl(`?chat=${encodeURIComponent(conversationId)}`)
+    ? resolveScopeUrl(
+        `?chat=${encodeURIComponent(conversationId)}${
+          isCallInvite ? `&call=${isGroup ? 'group' : 'incoming'}` : ''
+        }`
+      )
     : resolveScopeUrl('');
 
   const handlePushPromise = self.clients
@@ -299,28 +330,48 @@ self.addEventListener('push', (event) => {
             title,
             body,
             isGroup,
+            isCallInvite,
           });
-          if (payload.suppressIfFocused && client.url.includes(conversationId)) {
+          if (
+            !isCallInvite &&
+            payload.suppressIfFocused &&
+            client.url.includes(conversationId)
+          ) {
             return;
           }
         }
       }
 
-      return self.registration.showNotification(title, {
+      const notificationOptions = {
         body,
         icon,
         badge,
         tag,
         renotify: true,
-        vibrate: [180, 80, 180],
+        requireInteraction: isCallInvite,
+        vibrate: isCallInvite
+          ? [300, 100, 300, 100, 300, 100, 400]
+          : [180, 80, 180],
+        actions: isCallInvite
+          ? [
+              {
+                action: 'answer',
+                title: isGroup ? '📞 Join Group Call' : '📞 Open & Answer',
+              },
+              { action: 'dismiss', title: 'Dismiss' },
+            ]
+          : undefined,
         data: {
           url: targetUrl,
           conversationId,
           isGroup,
+          isCallInvite,
           senderId: payload.senderId || payload.sender_id || '',
           timestamp: Date.now(),
         },
-      });
+      };
+
+      return self.registration.showNotification(title, notificationOptions);
     });
 
   event.waitUntil(handlePushPromise);
@@ -329,12 +380,22 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
+  if (event.action === 'dismiss') {
+    return;
+  }
+
   const data = event.notification.data || {};
   const conversationId = data.conversationId || '';
+  const isCallInvite = Boolean(data.isCallInvite);
+  const isGroup = Boolean(data.isGroup);
   const targetUrl =
     data.url ||
     (conversationId
-      ? resolveScopeUrl(`?chat=${encodeURIComponent(conversationId)}`)
+      ? resolveScopeUrl(
+          `?chat=${encodeURIComponent(conversationId)}${
+            isCallInvite ? `&call=${isGroup ? 'group' : 'incoming'}` : ''
+          }`
+        )
       : resolveScopeUrl(''));
 
   const handleClickPromise = self.clients
@@ -355,6 +416,8 @@ self.addEventListener('notificationclick', (event) => {
           client.postMessage({
             type: 'SPARK_OPEN_CONVERSATION',
             conversationId,
+            isCallInvite,
+            isGroup,
             url: targetUrl,
           });
           return client;
@@ -371,6 +434,8 @@ self.addEventListener('notificationclick', (event) => {
           client.postMessage({
             type: 'SPARK_OPEN_CONVERSATION',
             conversationId,
+            isCallInvite,
+            isGroup,
             url: targetUrl,
           });
           return client;

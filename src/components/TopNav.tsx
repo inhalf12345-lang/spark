@@ -60,10 +60,10 @@ export const TopNav: React.FC<TopNavProps> = ({
     return () => window.removeEventListener('spark_precision_changed', handlePrecisionChange);
   }, []);
   return (
-    <header className="w-full bg-white/95 backdrop-blur-md border-b border-violet-100/80 px-4 sm:px-6 py-3 transition-colors">
-      <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
+    <header className="w-full bg-white/95 backdrop-blur-md border-b border-violet-100/80 px-3 sm:px-6 py-2.5 sm:py-3 transition-colors">
+      <div className="max-w-4xl lg:max-w-5xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
         {/* Left: Spark Logo & Name */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#8B5CF6] to-[#7C3AED] flex items-center justify-center text-white shadow-sm shadow-violet-500/25">
             <span className="text-sm font-black">✦</span>
           </div>
@@ -73,10 +73,10 @@ export const TopNav: React.FC<TopNavProps> = ({
         </div>
 
         {/* Center / Right: Streak, Coins & Profile Avatar */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
           {/* Flame streak */}
           <div
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-violet-50 text-[#7C3AED] text-xs font-bold"
+            className="flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-full bg-violet-50 text-[#7C3AED] text-xs font-bold shrink-0"
             title={`${profile.streak_days} Day Streak`}
           >
             <Flame className="w-3.5 h-3.5 fill-[#8B5CF6] text-[#8B5CF6]" />

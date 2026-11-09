@@ -162,10 +162,10 @@ export const HomeHub: React.FC<HomeHubProps> = ({
   };
 
   return (
-    <div className="spark-aura-home relative w-full flex flex-col flex-1 pb-24 text-slate-800">
-      <div className="max-w-4xl mx-auto w-full">
+    <div className="spark-aura-home relative w-full flex flex-col flex-1 pb-28 text-slate-800">
+      <div className="max-w-4xl lg:max-w-5xl mx-auto w-full">
         {/* 1. Header & Search Row matching reference */}
-        <div className="px-5 sm:px-8 pt-4 pb-3">
+        <div className="px-4 sm:px-8 pt-4 pb-3">
           {/* Title & Profile in reference style */}
           <div className="flex items-center justify-between mb-3">
             <div className="min-w-0"><h1 className="font-display font-extrabold text-[25px] tracking-tight text-slate-950">spark<span className="text-violet-500">.</span></h1><p className="text-[10px] tracking-[0.16em] font-semibold text-slate-400 uppercase">Your world, connected</p></div>
@@ -229,7 +229,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                 title="Create Group Chat"
               >
                 <Users className="w-4 h-4 text-[#8B5CF6]" />
-                <span className="hidden xs:inline">New Group</span>
+                <span className="hidden sm:inline">New Group</span>
               </button>
             )}
 
@@ -245,7 +245,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
         </div>
 
         {/* Spark Aura: compact welcome and feature shortcuts */}
-        <section className="px-5 sm:px-8 pt-3 pb-2">
+        <section className="px-4 sm:px-8 pt-3 pb-2">
           <div className="mb-4">
             <p className="text-[11px] font-semibold tracking-[0.14em] uppercase text-violet-500">Your connection space</p>
             <h2 className="mt-1 font-display font-bold text-[25px] leading-tight tracking-tight text-slate-950">
@@ -253,7 +253,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
             </h2>
             <p className="mt-1 text-xs text-slate-500">A little activity from your people today.</p>
           </div>
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
             <button type="button" onClick={onOpenCreateGroup}
               className="spark-aura-tile spark-aura-tile-lilac text-left rounded-2xl p-3.5 min-h-[88px] flex flex-col justify-between transition-transform active:scale-[0.98]">
               <Users className="w-5 h-5 text-violet-700" />
@@ -683,7 +683,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
       </div>
 
       {/* 5. Bottom Navigation Bar */}
-      <div className="fixed bottom-3 left-4 right-4 max-w-md mx-auto z-30">
+      <div className="fixed bottom-3 left-4 right-4 max-w-md mx-auto z-30 pb-[env(safe-area-inset-bottom,0px)]">
         <nav
           className="w-full h-15 rounded-full bg-gradient-to-r from-[#8B5CF6] via-[#A78BFA] to-[#7C3AED] shadow-xl shadow-violet-500/35 px-4 flex items-center justify-around text-white"
           aria-label="Bottom Navigation"

@@ -1696,8 +1696,17 @@ export class OneToOneVoiceCallManager {
 
     this.startRingLoop('outgoing');
 
+    if (!this.testTransportOverride) {
+      this.dispatchBackgroundCallWakeupPush(
+        verifiedConvId,
+        verifiedCallerId,
+        verifiedPeer.id,
+        callId
+      ).catch(() => {});
+    }
+
     // Periodically re-publish invite with a fresh unique signalId + timestamp + signature while outgoing
-    // in case the recipient comes online while the call is still ringing.
+    // in case the recipient wakes up from a Web Push notification while the call is still ringing.
     this.inviteResendInterval = setInterval(() => {
       if (
         this.state.status === 'outgoing' &&
@@ -1715,7 +1724,7 @@ export class OneToOneVoiceCallManager {
           this.activeCryptoBundle
         ).catch(() => {});
       }
-    }, 3500);
+    }, 2500);
 
     // 45-second unanswered / offline recipient timeout
     // Distinguishes between an offline recipient (never sent 'call-ringing') and a ringing unanswered recipient.
@@ -2638,6 +2647,67 @@ export class OneToOneVoiceCallManager {
     }, intervalMs);
   }
 
+  /**
+   * Wakes up a recipient device whose browser/PWA is closed or suspended in the background
+   * by invoking the Web Push Edge Function and, if the device has not acknowledged ringing within
+   * 1.2 seconds, inserting a call event message into `public.messages` to trigger the DB push webhook.
+   */
+  private async dispatchBackgroundCallWakeupPush(
+    conversationId: string,
+    callerId: string,
+    recipientId: string,
+    callId: string
+  ): Promise<void> {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const nowIso = new Date().toISOString();
+    try {
+      await supabase.functions.invoke('send-push-notification', {
+        body: {
+          type: 'INSERT',
+          table: 'messages',
+          schema: 'public',
+          isCallInvite: true,
+          title: '📞 Incoming Voice Call',
+          record: {
+            id: callId,
+            conversation_id: conversationId,
+            sender_id: callerId,
+            receiver_id: recipientId,
+            content: '📞 Incoming Voice Call — Tap to open Spark and answer',
+            created_at: nowIso,
+          },
+        },
+      });
+    } catch {}
+
+    // If the recipient's Realtime inbox did not acknowledge with 'call-ringing' within 1.2s,
+    // their app is likely closed/suspended; insert a call event into `public.messages` so
+    // the database `on_message_inserted_send_push` webhook delivers a Web Push call alert.
+    setTimeout(async () => {
+      if (
+        this.state.status === 'outgoing' &&
+        this.state.callId === callId &&
+        !this.state.isPeerRinging
+      ) {
+        try {
+          await supabase.from('messages').insert({
+            conversation_id: conversationId,
+            sender_id: callerId,
+            receiver_id: recipientId,
+            content: '📞 Incoming Voice Call — Tap to open Spark and answer',
+            coins_earned: 0,
+          });
+          await supabase
+            .from('conversations')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', conversationId);
+        } catch {}
+      }
+    }, 1200);
+  }
+
   private stopRingLoop(): void {
     if (this.ringInterval) {
       clearInterval(this.ringInterval);
@@ -2654,6 +2724,25 @@ export class OneToOneVoiceCallManager {
       } catch {}
       this.activeIncomingNotification = null;
     }
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .getRegistration()
+        .then((reg) => reg?.getNotifications())
+        .then((notifs) => {
+          if (!notifs) return;
+          for (const n of notifs) {
+            if (
+              n.tag === 'spark-incoming-voice-call' ||
+              (n.tag && n.tag.startsWith('spark-call-'))
+            ) {
+              try {
+                n.close();
+              } catch {}
+            }
+          }
+        })
+        .catch(() => {});
+    }
   }
 
   private showIncomingCallNotification(): void {
@@ -2661,10 +2750,56 @@ export class OneToOneVoiceCallManager {
     if (Notification.permission !== 'granted') return;
     const peerName =
       this.state.peerUser?.display_name || this.state.peerUser?.username || 'Spark Contact';
-    const peerAvatar = this.state.peerUser?.avatar_url;
+    const peerAvatar = this.state.peerUser?.avatar_url || '/public/pwa-192x192.png';
+    const convId = this.state.conversationId || '';
+    const title = `📞 Incoming Voice Call — ${peerName}`;
+    const body = 'Tap to return to Spark and answer the voice call.';
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) =>
+          reg.showNotification(title, {
+            body,
+            icon: peerAvatar,
+            badge: '/public/pwa-192x192.png',
+            tag: 'spark-incoming-voice-call',
+            renotify: true,
+            requireInteraction: true,
+            vibrate: [300, 100, 300, 100, 300, 100, 400],
+            actions: [
+              { action: 'answer', title: '📞 Open & Answer' },
+              { action: 'dismiss', title: 'Dismiss' },
+            ],
+            data: {
+              conversationId: convId,
+              isCallInvite: true,
+              isGroup: false,
+              url: convId ? `?chat=${encodeURIComponent(convId)}&call=incoming` : '',
+            },
+          } as any)
+        )
+        .catch(() => {
+          try {
+            const notif = new Notification(title, {
+              body,
+              icon: peerAvatar,
+              tag: 'spark-incoming-voice-call',
+            });
+            notif.onclick = () => {
+              try {
+                window.focus();
+                notif.close();
+              } catch {}
+            };
+            this.activeIncomingNotification = notif;
+          } catch {}
+        });
+      return;
+    }
+
     try {
-      const notif = new Notification(`Incoming Voice Call — ${peerName}`, {
-        body: 'Tap to return to Spark and answer the voice call.',
+      const notif = new Notification(title, {
+        body,
         icon: peerAvatar,
         tag: 'spark-incoming-voice-call',
       });

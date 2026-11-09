@@ -72,6 +72,7 @@ import {
 } from './lib/pushService';
 import { VoiceCallModal } from './components/VoiceCallModal';
 import { voiceCallManager } from './lib/callService';
+import { groupVoiceCallManager } from './lib/groupCallService';
 
 export default function App() {
   // Session & Authentication state (synchronously restored so user stays signed in until explicit Sign Out)
@@ -461,11 +462,12 @@ export default function App() {
       });
       setPendingDeepLinkConvId(null);
 
-      // Clean ?chat= query param from URL without reloading the page
+      // Clean ?chat= and ?call= query params from URL without reloading the page
       try {
         const url = new URL(window.location.href);
-        if (url.searchParams.has('chat')) {
+        if (url.searchParams.has('chat') || url.searchParams.has('call')) {
           url.searchParams.delete('chat');
+          url.searchParams.delete('call');
           window.history.replaceState({}, '', url.pathname + url.search + url.hash);
         }
       } catch {}
@@ -670,6 +672,7 @@ export default function App() {
     try {
       await voiceCallManager.endVoiceCall('Call ended due to sign out.');
       voiceCallManager.cleanupInboxChannel();
+      await groupVoiceCallManager.leaveGroupVoiceCall(false);
     } catch {}
     purgeCryptoSessionMemory();
     clearUserSessionData();

@@ -66,6 +66,7 @@ import {
 import { playSendSound, playReceiveSound } from '../lib/sounds';
 import { isConversationMuted, toggleConversationMute } from '../lib/pushService';
 import { voiceCallManager } from '../lib/callService';
+import { groupVoiceCallManager } from '../lib/groupCallService';
 
 interface ChatTargetUser {
   id: string;
@@ -631,16 +632,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }, 1200);
   };
 
+  const handleStartOrJoinGroupCall = async (announceInChat = true) => {
+    const result = await groupVoiceCallManager.startOrJoinGroupVoiceCall({
+      conversationId: activeConvId,
+      groupName: friend.display_name || friend.username || 'Group Call',
+      groupAvatar: friend.avatar_url,
+      localProfile: profile,
+      members: friend.members,
+      announceInChat,
+    });
+    if (!result.success && result.error) {
+      setCallNotice(result.error);
+      setTimeout(() => setCallNotice(null), 4500);
+    }
+  };
+
   const triggerCallNotice = async (type: 'Audio Call' | 'Video Call') => {
     if (type === 'Video Call') {
-      setCallNotice('Phase 1 supports 1-to-1 voice calling only. Video calling is not enabled yet.');
+      setCallNotice('Voice calling is supported for 1-to-1 and group chats. Video calling is not enabled yet.');
       setTimeout(() => setCallNotice(null), 3500);
       return;
     }
 
     if (friend.is_group) {
-      setCallNotice('Phase 1 supports 1-to-1 voice calling only. Group calling is not enabled yet.');
-      setTimeout(() => setCallNotice(null), 3500);
+      await handleStartOrJoinGroupCall(true);
       return;
     }
 
@@ -1001,10 +1016,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return formatTimestampPrecision(isoString, precisionSettings);
   };
 
+  const hasRecentGroupCallInvite =
+    Boolean(friend.is_group) &&
+    messages.some(
+      (m) =>
+        m.content &&
+        /started a group voice call/i.test(m.content) &&
+        Date.now() - new Date(m.created_at).getTime() < 45 * 60 * 1000
+    );
+
   return (
     <div
       ref={containerRef}
-      className={`spark-aura-surface fixed inset-0 z-50 flex flex-col transition-all duration-300 ${
+      className={`spark-aura-surface fixed inset-0 h-[100dvh] max-h-[100dvh] overflow-hidden z-50 flex flex-col transition-all duration-300 ${
         isExiting ? 'liquid-exit' : 'liquid-enter'
       }`}
       style={{
@@ -1016,26 +1040,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }}
     >
       {/* Spark Aura Header */}
-      <header className="sticky top-0 z-20 w-full px-4 sm:px-6 py-3 bg-white/95 backdrop-blur-md border-b border-violet-100/80 shadow-[0_4px_20px_rgba(42,30,75,0.04)]">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
+      <header className="sticky top-0 z-20 w-full px-3 sm:px-6 py-2.5 sm:py-3 bg-white/95 backdrop-blur-md border-b border-violet-100/80 shadow-[0_4px_20px_rgba(42,30,75,0.04)] shrink-0">
+        <div className="max-w-4xl lg:max-w-5xl mx-auto flex items-center justify-between gap-2">
           {/* Left: Back chevron + Avatar + User/Group info */}
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
             <button
               onClick={handleBack}
-              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-700 hover:text-[#8B5CF6] hover:bg-violet-50 transition-colors -ml-1 active:scale-90"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-slate-700 hover:text-[#8B5CF6] hover:bg-violet-50 transition-colors -ml-1 active:scale-90 shrink-0"
               title="Back to Messages"
             >
               <ChevronLeft className="w-6 h-6 stroke-[2.6]" />
             </button>
 
             <div
-              className={`flex items-center gap-2.5 ${friend.is_group ? 'cursor-pointer hover:opacity-90' : ''}`}
+              className={`flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1 ${
+                friend.is_group ? 'cursor-pointer hover:opacity-90' : ''
+              }`}
               onClick={() => {
                 if (friend.is_group) setIsGroupInfoOpen(true);
               }}
               title={friend.is_group ? 'Click for group details & settings' : undefined}
             >
-              <div className="relative">
+              <div className="relative shrink-0">
                 <div className="w-10 h-10 rounded-full p-[1.5px] bg-gradient-to-tr from-[#8B5CF6] to-[#A78BFA] shadow-xs">
                   <img
                     src={
@@ -1058,13 +1084,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )}
               </div>
 
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <h2 className="font-display font-bold text-sm sm:text-[15px] tracking-tight text-slate-900">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <h2 className="font-display font-bold text-sm sm:text-[15px] tracking-tight text-slate-900 truncate">
                     {friend.display_name || friend.username}
                   </h2>
                   {!friend.is_group && (
-                    <div className="flex items-center gap-0.5 text-[#8B5CF6] bg-violet-50 px-1.5 py-0.5 rounded-full font-bold text-[10px]">
+                    <div className="flex items-center gap-0.5 text-[#8B5CF6] bg-violet-50 px-1.5 py-0.5 rounded-full font-bold text-[10px] shrink-0">
                       <Flame className="w-3 h-3 fill-[#8B5CF6] text-[#8B5CF6]" />
                       <span>{friend.streak_days || 1}d</span>
                     </div>
@@ -1072,39 +1098,41 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </div>
 
                 {/* Status */}
-                <div className="flex items-center gap-2 text-[10px] mt-0.5">
+                <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] mt-0.5 min-w-0">
                   {friend.is_group ? (
-                    <span className="text-emerald-600 font-semibold flex items-center gap-1">
-                      <Users className="w-3 h-3 text-[#8B5CF6]" />
-                      <span>{friend.member_count || (friend.members?.length || 2)} members</span>
+                    <span className="text-emerald-600 font-semibold flex items-center gap-1 truncate">
+                      <Users className="w-3 h-3 text-[#8B5CF6] shrink-0" />
+                      <span className="truncate">
+                        {friend.member_count || (friend.members?.length || 2)} members
+                      </span>
                       {isGroupCreator && (
-                        <span className="text-[9px] font-bold text-[#8B5CF6] bg-violet-50 border border-violet-200/60 px-1.5 py-0.2 rounded-full">
+                        <span className="text-[9px] font-bold text-[#8B5CF6] bg-violet-50 border border-violet-200/60 px-1.5 py-0.2 rounded-full shrink-0">
                           Creator
                         </span>
                       )}
                     </span>
                   ) : (
                     <>
-                      <span className="text-emerald-600 font-semibold">Online</span>
-                      <span className="text-slate-300">•</span>
-                      <span className="text-slate-400 font-mono">@{friend.username}</span>
+                      <span className="text-emerald-600 font-semibold shrink-0">Online</span>
+                      <span className="text-slate-300 shrink-0">•</span>
+                      <span className="text-slate-400 font-mono truncate">@{friend.username}</span>
                       {isKeyNegotiating ? (
-                        <span className="text-amber-500 flex items-center gap-0.5">
+                        <span className="text-amber-500 flex items-center gap-0.5 shrink-0">
                           <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                          <span>Verifying keys...</span>
+                          <span className="hidden sm:inline">Verifying keys...</span>
                         </span>
                       ) : isE2EEActive ? (
                         <span
-                          className="text-emerald-600 font-semibold flex items-center gap-0.5 bg-emerald-50 px-1.5 py-0.2 rounded-full"
+                          className="text-emerald-600 font-semibold flex items-center gap-0.5 bg-emerald-50 px-1.5 py-0.2 rounded-full shrink-0"
                           title="Messages are end-to-end encrypted with AES-256-GCM. Supabase cannot read them."
                         >
                           <ShieldCheck className="w-3 h-3" />
-                          <span>Encrypted</span>
+                          <span className="hidden xs:inline sm:inline">Encrypted</span>
                         </span>
                       ) : (
-                        <span className="text-slate-400 flex items-center gap-0.5">
+                        <span className="text-slate-400 flex items-center gap-0.5 shrink-0">
                           <Lock className="w-2.5 h-2.5" />
-                          <span>Direct chat</span>
+                          <span className="hidden sm:inline">Direct chat</span>
                         </span>
                       )}
                     </>
@@ -1115,7 +1143,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Right: Call Actions + Mute + Delete Chat / Group Info */}
-          <div className="flex items-center gap-1.5 text-[#8B5CF6]">
+          <div className="flex items-center gap-1 sm:gap-1.5 text-[#8B5CF6] shrink-0">
             <button
               type="button"
               onClick={handleToggleChatMute}
@@ -1147,7 +1175,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <button
               onClick={() => triggerCallNotice('Audio Call')}
               className="w-9 h-9 rounded-full bg-violet-50/80 hover:bg-violet-100 flex items-center justify-center transition-colors active:scale-90 text-[#8B5CF6]"
-              title="Audio Call"
+              title={friend.is_group ? 'Start or Join Group Voice Call' : 'Audio Call'}
             >
               <Phone className="w-4 h-4 fill-current stroke-none" />
             </button>
@@ -1172,14 +1200,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
         />
       )}
 
+      {/* Live Group Voice Call Join Banner */}
+      {friend.is_group && hasRecentGroupCallInvite && (
+        <div className="w-full bg-gradient-to-r from-[#8B5CF6] via-[#7C3AED] to-emerald-600 text-white px-4 py-2 shadow-sm shrink-0">
+          <div className="max-w-4xl lg:max-w-5xl mx-auto flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 animate-ping shrink-0" />
+              <span className="text-xs font-bold truncate">
+                Group Voice Room Open — Tap to join live audio
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleStartOrJoinGroupCall(false)}
+              className="px-3.5 py-1 rounded-full bg-white text-[#7C3AED] hover:bg-violet-50 font-bold text-xs flex items-center gap-1.5 shadow-xs active:scale-95 transition-all shrink-0 cursor-pointer"
+            >
+              <Phone className="w-3.5 h-3.5 fill-current" />
+              <span>Join Call</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {callNotice && (
-        <div className="p-2 text-center text-xs font-semibold bg-violet-50 text-[#7C3AED] border-b border-violet-100 animate-pulse">
+        <div className="p-2 text-center text-xs font-semibold bg-violet-50 text-[#7C3AED] border-b border-violet-100 animate-pulse shrink-0">
           {callNotice}
         </div>
       )}
 
       {sendError && (
-        <div className="p-2.5 text-center text-xs font-semibold bg-rose-50 text-rose-600 border-b border-rose-100 flex items-center justify-center gap-1.5">
+        <div className="p-2.5 text-center text-xs font-semibold bg-rose-50 text-rose-600 border-b border-rose-100 flex items-center justify-center gap-1.5 shrink-0">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{sendError}</span>
         </div>
@@ -1308,6 +1358,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               <span>Join Google Meet</span>
                             </a>
                           )}
+                          {friend.is_group && /started a group voice call/i.test(msg.content) && (
+                            <button
+                              type="button"
+                              onClick={() => handleStartOrJoinGroupCall(false)}
+                              className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer ${
+                                isMine
+                                  ? 'bg-white text-[#7C3AED] hover:bg-violet-50'
+                                  : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                              }`}
+                            >
+                              <Phone className="w-3.5 h-3.5 fill-current" />
+                              <span>Join Group Voice Call</span>
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1377,7 +1441,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
 
       {/* Message Composer */}
-      <footer className="sticky bottom-0 w-full px-4 sm:px-6 py-3 bg-white/95 backdrop-blur-md border-t border-violet-100/80 shadow-[0_-4px_20px_rgba(42,30,75,0.04)]">
+      <footer className="sticky bottom-0 w-full px-3 sm:px-6 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] bg-white/95 backdrop-blur-md border-t border-violet-100/80 shadow-[0_-4px_20px_rgba(42,30,75,0.04)] shrink-0">
         {/* Hidden file input for Group Image Sharing */}
         {friend.is_group && (
           <input
@@ -1391,7 +1455,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         <form
           onSubmit={handleSendMessage}
-          className="max-w-4xl mx-auto flex items-center gap-2.5 relative"
+          className="max-w-4xl lg:max-w-5xl mx-auto flex items-center gap-2 sm:gap-2.5 relative"
         >
           {/* Group-Only WhatsApp-Style Picture Sender (Hidden in 1-to-1 chats) */}
           {friend.is_group && (
