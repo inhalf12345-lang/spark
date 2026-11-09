@@ -1,0 +1,40 @@
+name: Build and Update GitHub Pages Bundle
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build production bundle for GitHub Pages
+        run: npm run build
+
+      - name: Commit and push updated static bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/gh-pages-bundle/app.js public/gh-pages-bundle/app.css sw.js
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update prebuilt gh-pages-bundle from latest source [skip ci]"
+            git push
+          fi
