@@ -24,6 +24,9 @@ import {
   ShieldAlert,
   Bell,
   BellOff,
+  Search,
+  UserPlus,
+  MoreHorizontal,
 } from 'lucide-react';
 import { ChatMessage, UserProfile, PublicUserProfile } from '../types';
 import {
@@ -54,7 +57,11 @@ import {
   decryptE2EEMessage,
 } from '../lib/cryptoService';
 import { GroupPhotoButtonAndModal } from './GroupPhotoModal';
-import { GroupTodoSection } from './GroupTodoBoard';
+import {
+  GroupTodoSection,
+  GroupTodoDashboardCard,
+  openGroupTodoBoardModal,
+} from './GroupTodoBoard';
 import { playSendSound, playReceiveSound } from '../lib/sounds';
 import { isConversationMuted, toggleConversationMute } from '../lib/pushService';
 import { voiceCallManager } from '../lib/callService';
@@ -160,6 +167,70 @@ const GroupChatImage: React.FC<{
   );
 };
 
+const GroupDashboardMediaThumbnail: React.FC<{
+  mediaRef: string;
+  alt: string;
+  overlayLabel?: string;
+  onClick: (url: string) => void;
+}> = ({ mediaRef, alt, overlayLabel, onClick }) => {
+  const [resolvedUrl, setResolvedUrl] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setIsLoading(true);
+    resolveGroupMediaUrl(mediaRef)
+      .then((url) => {
+        if (active) {
+          setResolvedUrl(url || '');
+          setIsLoading(false);
+        }
+      })
+      .catch(() => {
+        if (active) setIsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [mediaRef]);
+
+  if (isLoading) {
+    return (
+      <div className="aspect-square rounded-2xl bg-violet-50/70 border border-violet-100 flex items-center justify-center">
+        <Loader2 className="w-4 h-4 animate-spin text-[#8B5CF6]" />
+      </div>
+    );
+  }
+
+  if (!resolvedUrl) {
+    return (
+      <div className="aspect-square rounded-2xl bg-slate-100 border border-slate-200/70 flex items-center justify-center text-slate-400">
+        <ImageIcon className="w-4 h-4" />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(resolvedUrl)}
+      className="relative aspect-square rounded-2xl overflow-hidden border border-violet-100/90 shadow-2xs group/thumb cursor-pointer bg-slate-100"
+    >
+      <img
+        src={resolvedUrl}
+        alt={alt}
+        className="w-full h-full object-cover transition-transform duration-200 group-hover/thumb:scale-105"
+        loading="lazy"
+      />
+      {overlayLabel && (
+        <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center text-white font-display font-bold text-xs">
+          {overlayLabel}
+        </div>
+      )}
+    </button>
+  );
+};
+
 // Helper to check if two message instances represent the same message (prevents Realtime / HTTP send race duplicates)
 function isSameOrDuplicateMessage(a: ChatMessage, b: ChatMessage): boolean {
   if (a.id && b.id && a.id === b.id) return true;
@@ -238,6 +309,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // Group Details & Deletion states (creator-only deletion enforcement)
   const [isGroupInfoOpen, setIsGroupInfoOpen] = useState(false);
+  const [showAllGroupMedia, setShowAllGroupMedia] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeletingGroup, setIsDeletingGroup] = useState(false);
   const [deleteGroupError, setDeleteGroupError] = useState<string | null>(null);
@@ -1394,7 +1466,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {/* Group Info & Creator Management Modal */}
+      {/* Group Dashboard & Details Modal */}
       {friend.is_group && isGroupInfoOpen && (
         <div
           className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
@@ -1407,78 +1479,204 @@ export const ChatView: React.FC<ChatViewProps> = ({
           }}
         >
           <div
-            className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[88vh]"
+            className="w-full max-w-md bg-[#f8f7fc] rounded-[32px] shadow-2xl border border-violet-100/90 overflow-hidden flex flex-col max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <Users className="w-5 h-5 text-[#ff3b69]" />
-                <h3 className="font-display font-bold text-base text-slate-900">Group Details</h3>
+            {/* Dashboard Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 bg-white/95 border-b border-violet-100/80">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  disabled={isDeletingGroup}
+                  onClick={() => {
+                    setIsGroupInfoOpen(false);
+                    setShowDeleteConfirm(false);
+                    setDeleteGroupError(null);
+                  }}
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-slate-700 hover:bg-violet-50 transition-colors shrink-0 cursor-pointer"
+                  title="Back to Chat"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <div className="relative shrink-0">
+                  <img
+                    src={
+                      friend.avatar_url ||
+                      `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+                        friend.username || 'group'
+                      )}&backgroundColor=f1f5f9`
+                    }
+                    alt={friend.display_name || friend.username}
+                    className="w-10 h-10 rounded-full object-cover bg-white border border-violet-200"
+                  />
+                  <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-white" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-display font-bold text-sm text-slate-900 truncate">
+                    {friend.display_name || friend.username}
+                  </h3>
+                  <p className="text-[11px] text-emerald-600 font-semibold">
+                    {friend.member_count || friend.members?.length || 2} members
+                  </p>
+                </div>
               </div>
               <button
+                type="button"
                 disabled={isDeletingGroup}
                 onClick={() => {
                   setIsGroupInfoOpen(false);
                   setShowDeleteConfirm(false);
                   setDeleteGroupError(null);
                 }}
-                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Modal Body */}
-            <div className="p-6 space-y-5 overflow-y-auto">
-              {/* Group Identity Card */}
-              <div className="flex items-center gap-3.5 p-3.5 rounded-2xl bg-slate-50 border border-slate-100">
-                <img
-                  src={
-                    friend.avatar_url ||
-                    `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
-                      friend.username || 'group'
-                    )}&backgroundColor=f1f5f9`
-                  }
-                  alt={friend.display_name || friend.username}
-                  className="w-13 h-13 rounded-full object-cover bg-white border border-slate-200 shrink-0"
-                />
-                <div className="min-w-0 flex-1">
-                  <h4 className="font-display font-bold text-sm text-slate-900 truncate">
-                    {friend.display_name || friend.username}
+            {/* Dashboard Body */}
+            <div className="p-4 sm:p-5 space-y-4 overflow-y-auto">
+              {/* 1. Group Banner Card */}
+              <div className="relative rounded-3xl overflow-hidden bg-gradient-to-br from-[#8B5CF6] via-[#7C3AED] to-[#4F46E5] p-5 text-white shadow-md shadow-violet-500/15">
+                <div className="relative z-10 space-y-1">
+                  <span className="inline-block px-2.5 py-0.5 rounded-full bg-white/20 backdrop-blur-xs text-[10px] font-bold uppercase tracking-wider">
+                    Spark Group Space
+                  </span>
+                  <h4 className="font-display font-extrabold text-base sm:text-lg tracking-tight">
+                    Together in {friend.display_name || friend.username} ✨
                   </h4>
-                  <p className="text-xs text-slate-500 font-medium">
-                    {friend.member_count || friend.members?.length || 2} members in this group
+                  <p className="text-xs text-violet-100/90">
+                    Stay connected, share updates, and track daily group tasks together.
                   </p>
                 </div>
               </div>
 
-              {/* Creator Status Indicator */}
-              {isGroupCreator ? (
-                <div className="p-3 rounded-2xl bg-emerald-50/80 border border-emerald-200/80 text-emerald-800 text-xs flex items-center gap-2.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <div>
-                    <span className="font-bold">Group Creator / Owner: </span>
-                    <span>You created this group and have full administrator permissions.</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 text-slate-600 text-xs flex items-center gap-2.5">
-                  <Lock className="w-4 h-4 text-slate-400 shrink-0" />
-                  <div>
-                    <span className="font-semibold">Role: Member · </span>
-                    <span className="text-slate-500">Only the person who created this group can delete it.</span>
-                  </div>
-                </div>
-              )}
+              {/* 2. Group Action Shortcuts Row */}
+              <div className="grid grid-cols-4 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsGroupInfoOpen(false);
+                    setTimeout(() => inputRef.current?.focus(), 100);
+                  }}
+                  className="py-2.5 px-2 rounded-2xl bg-white hover:bg-violet-50/70 border border-violet-100/90 shadow-2xs flex flex-col items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
+                >
+                  <Search className="w-4 h-4 text-[#8B5CF6]" />
+                  <span className="text-[11px] font-semibold text-slate-700">Search</span>
+                </button>
 
-              {/* Members List */}
+                <button
+                  type="button"
+                  onClick={() => openGroupTodoBoardModal(activeConvId, 'my_todo')}
+                  className="py-2.5 px-2 rounded-2xl bg-white hover:bg-violet-50/70 border border-violet-100/90 shadow-2xs flex flex-col items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
+                >
+                  <UserPlus className="w-4 h-4 text-[#8B5CF6]" />
+                  <span className="text-[11px] font-semibold text-slate-700">Add</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleToggleChatMute}
+                  className="py-2.5 px-2 rounded-2xl bg-white hover:bg-violet-50/70 border border-violet-100/90 shadow-2xs flex flex-col items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
+                >
+                  {isChatMuted ? (
+                    <BellOff className="w-4 h-4 text-amber-500" />
+                  ) : (
+                    <Bell className="w-4 h-4 text-[#8B5CF6]" />
+                  )}
+                  <span className="text-[11px] font-semibold text-slate-700">
+                    {isChatMuted ? 'Muted' : 'Notifications'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => openGroupTodoBoardModal(activeConvId, 'group_progress')}
+                  className="py-2.5 px-2 rounded-2xl bg-white hover:bg-violet-50/70 border border-violet-100/90 shadow-2xs flex flex-col items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
+                >
+                  <MoreHorizontal className="w-4 h-4 text-[#8B5CF6]" />
+                  <span className="text-[11px] font-semibold text-slate-700">More</span>
+                </button>
+              </div>
+
+              {/* 3. Group To-Do List Section (Below Group Action Shortcuts & Above Group Media) */}
+              <GroupTodoDashboardCard
+                conversationId={activeConvId}
+                profile={profile}
+                members={friend.members}
+                onOpenFullBoard={(tab = 'group_progress') => {
+                  openGroupTodoBoardModal(activeConvId, tab);
+                }}
+              />
+
+              {/* 4. Group Media Section */}
+              {(() => {
+                const mediaMessages = messages.filter((m) => Boolean(m.media_url));
+                const visibleMedia = showAllGroupMedia
+                  ? mediaMessages
+                  : mediaMessages.slice(0, 4);
+                const extraCount = Math.max(0, mediaMessages.length - 4);
+
+                return (
+                  <div className="rounded-3xl bg-white/95 border border-violet-100/90 shadow-[0_8px_26px_rgba(42,30,75,0.06)] p-4 sm:p-5 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="font-display font-bold text-sm sm:text-[15px] text-slate-900 tracking-tight">
+                        Group Media
+                      </h4>
+                      {mediaMessages.length > 4 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllGroupMedia((prev) => !prev)}
+                          className="text-xs font-bold text-[#8B5CF6] hover:text-violet-700 flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <span>{showAllGroupMedia ? 'Show less' : 'See all →'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {mediaMessages.length === 0 ? (
+                      <div className="py-5 px-3 rounded-2xl bg-[#f8f7fc] border border-dashed border-violet-200/70 text-center text-xs text-slate-400">
+                        No photos shared in this group yet.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4 gap-2">
+                        {visibleMedia.map((m, idx) => (
+                          <GroupDashboardMediaThumbnail
+                            key={m.id}
+                            mediaRef={m.media_url!}
+                            alt={m.content || 'Group media'}
+                            overlayLabel={
+                              !showAllGroupMedia && idx === 3 && extraCount > 0
+                                ? `+${extraCount}`
+                                : undefined
+                            }
+                            onClick={(url) => {
+                              if (!showAllGroupMedia && idx === 3 && extraCount > 0) {
+                                setShowAllGroupMedia(true);
+                              } else {
+                                setLightboxImageUrl(url);
+                              }
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* 5. Group Members Section */}
               {friend.members && friend.members.length > 0 && (
-                <div>
-                  <h5 className="text-xs font-bold text-slate-700 mb-2">Group Members</h5>
+                <div className="rounded-3xl bg-white/95 border border-violet-100/90 shadow-[0_8px_26px_rgba(42,30,75,0.06)] p-4 sm:p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h5 className="font-display font-bold text-sm text-slate-900">
+                      Members ({friend.member_count || friend.members.length})
+                    </h5>
+                  </div>
                   <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
                     {friend.members.map((m) => {
-                      const isOwner = groupCreatorId === m.id || (isGroupCreator && m.id === profile.id);
+                      const isOwner =
+                        groupCreatorId === m.id || (isGroupCreator && m.id === profile.id);
                       return (
                         <div
                           key={m.id}
@@ -1505,7 +1703,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             </div>
                           </div>
                           {isOwner && (
-                            <span className="text-[10px] font-bold text-[#ff3b69] bg-rose-50 px-2 py-0.5 rounded-full shrink-0">
+                            <span className="text-[10px] font-bold text-[#8B5CF6] bg-violet-50 px-2 py-0.5 rounded-full shrink-0">
                               Creator
                             </span>
                           )}
@@ -1516,9 +1714,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </div>
               )}
 
+              {/* Creator Status Indicator */}
+              {isGroupCreator ? (
+                <div className="p-3 rounded-2xl bg-emerald-50/80 border border-emerald-200/80 text-emerald-800 text-xs flex items-center gap-2.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <div>
+                    <span className="font-bold">Group Creator / Owner: </span>
+                    <span>You created this group and have full administrator permissions.</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 rounded-2xl bg-white border border-violet-100 text-slate-600 text-xs flex items-center gap-2.5">
+                  <Lock className="w-4 h-4 text-slate-400 shrink-0" />
+                  <div>
+                    <span className="font-semibold">Role: Member · </span>
+                    <span className="text-slate-500">
+                      Only the person who created this group can delete it.
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {/* Danger Zone: ONLY shown to group creator */}
               {isGroupCreator && (
-                <div className="pt-2 border-t border-slate-100">
+                <div className="pt-1">
                   <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200/80 space-y-3">
                     <div className="flex items-start gap-2.5">
                       <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -1541,7 +1760,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       <button
                         type="button"
                         onClick={() => setShowDeleteConfirm(true)}
-                        className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors active:scale-98"
+                        className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors active:scale-98 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         <span>Delete Group (Creator Only)</span>
@@ -1590,7 +1809,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
 
             {/* Modal Footer */}
-            <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex justify-end">
+            <div className="px-6 py-3 bg-white border-t border-violet-100/80 flex justify-end">
               <button
                 type="button"
                 disabled={isDeletingGroup}
@@ -1598,7 +1817,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   setIsGroupInfoOpen(false);
                   setShowDeleteConfirm(false);
                 }}
-                className="px-4 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs transition-colors"
+                className="px-4 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors cursor-pointer"
               >
                 Close
               </button>

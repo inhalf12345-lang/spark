@@ -162,27 +162,25 @@ export const HomeHub: React.FC<HomeHubProps> = ({
   };
 
   return (
-    <div className="relative w-full flex flex-col flex-1 pb-24 bg-white/95 text-slate-800">
+    <div className="spark-aura-home relative w-full flex flex-col flex-1 pb-24 text-slate-800">
       <div className="max-w-4xl mx-auto w-full">
         {/* 1. Header & Search Row matching reference */}
         <div className="px-5 sm:px-8 pt-4 pb-3">
           {/* Title & Profile in reference style */}
           <div className="flex items-center justify-between mb-3">
-            <h1 className="font-display font-black text-2xl tracking-tight text-slate-900">
-              Messages
-            </h1>
+            <div className="min-w-0"><h1 className="font-display font-extrabold text-[25px] tracking-tight text-slate-950">spark<span className="text-violet-500">.</span></h1><p className="text-[10px] tracking-[0.16em] font-semibold text-slate-400 uppercase">Your world, connected</p></div>
 
             <div className="flex items-center gap-2">
               <button
                 onClick={onOpenLeaderboard}
-                className="w-8 h-8 rounded-full bg-slate-50 hover:bg-slate-100 flex items-center justify-center text-slate-600 transition-colors"
+                className="w-10 h-10 rounded-full bg-white hover:bg-violet-50 border border-slate-200/70 flex items-center justify-center text-slate-600 shadow-sm transition-colors"
                 title="Weekly Leaderboard"
               >
                 <Trophy className="w-4 h-4 text-purple-500" />
               </button>
               <button
                 onClick={onOpenProfile}
-                className="w-8 h-8 rounded-full p-[1.5px] bg-gradient-to-tr from-[#ff3b69] to-[#38bdf8] shadow-sm transition-transform active:scale-95"
+                className="w-10 h-10 rounded-full p-[2px] bg-gradient-to-tr from-violet-400 to-fuchsia-300 shadow-sm transition-transform active:scale-95"
                 title="Profile"
               >
                 <img
@@ -204,7 +202,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search conversations or @username..."
-                className="w-full py-2.5 pl-10 pr-4 rounded-full text-xs bg-slate-100/70 border border-slate-200/60 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#ff3b69]/60 focus:bg-white transition-all shadow-inner"
+                className="w-full py-2.5 pl-10 pr-4 rounded-full text-xs bg-slate-100/70 border border-slate-200/60 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#8B5CF6]/60 focus:bg-white transition-all shadow-inner"
               />
             </div>
 
@@ -213,12 +211,12 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                 type="button"
                 onClick={handleRefresh}
                 disabled={isManualRefreshing || isLoadingConversations}
-                className="h-10 w-10 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200/70 text-slate-600 hover:text-[#ff3b69] flex items-center justify-center transition-all shrink-0 active:scale-95 disabled:opacity-50"
+                className="h-10 w-10 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200/70 text-slate-600 hover:text-[#8B5CF6] flex items-center justify-center transition-all shrink-0 active:scale-95 disabled:opacity-50"
                 title="Refresh and sync conversations"
               >
                 <RefreshCw
                   className={`w-4 h-4 ${
-                    isManualRefreshing || isLoadingConversations ? 'animate-spin text-[#ff3b69]' : ''
+                    isManualRefreshing || isLoadingConversations ? 'animate-spin text-[#8B5CF6]' : ''
                   }`}
                 />
               </button>
@@ -227,17 +225,17 @@ export const HomeHub: React.FC<HomeHubProps> = ({
             {onOpenCreateGroup && (
               <button
                 onClick={onOpenCreateGroup}
-                className="h-10 px-3 rounded-full bg-rose-50 hover:bg-rose-100 border border-rose-200/70 text-[#ff3b69] text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 active:scale-95 whitespace-nowrap"
+                className="h-10 px-3 rounded-full bg-violet-50 hover:bg-violet-100 border border-violet-200/70 text-[#8B5CF6] text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 active:scale-95 whitespace-nowrap"
                 title="Create Group Chat"
               >
-                <Users className="w-4 h-4 text-[#ff3b69]" />
+                <Users className="w-4 h-4 text-[#8B5CF6]" />
                 <span className="hidden xs:inline">New Group</span>
               </button>
             )}
 
             <button
               onClick={onOpenAddFriend}
-              className="h-10 px-3 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-pink-500/20 hover:opacity-95 active:scale-95 transition-all shrink-0"
+              className="h-10 px-3 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#A78BFA] text-white text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-violet-500/20 hover:opacity-95 active:scale-95 transition-all shrink-0"
               title="Search by Username & Start Chat"
             >
               <UserPlus className="w-4 h-4" />
@@ -246,6 +244,39 @@ export const HomeHub: React.FC<HomeHubProps> = ({
           </div>
         </div>
 
+        {/* Spark Aura: compact welcome and feature shortcuts */}
+        <section className="px-5 sm:px-8 pt-3 pb-2">
+          <div className="mb-4">
+            <p className="text-[11px] font-semibold tracking-[0.14em] uppercase text-violet-500">Your connection space</p>
+            <h2 className="mt-1 font-display font-bold text-[25px] leading-tight tracking-tight text-slate-950">
+              Hello, {profile.display_name || profile.username} <span aria-hidden="true">✦</span>
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">A little activity from your people today.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <button type="button" onClick={onOpenCreateGroup}
+              className="spark-aura-tile spark-aura-tile-lilac text-left rounded-2xl p-3.5 min-h-[88px] flex flex-col justify-between transition-transform active:scale-[0.98]">
+              <Users className="w-5 h-5 text-violet-700" />
+              <span><span className="block text-sm font-bold text-slate-900">Groups</span><span className="block text-[11px] text-slate-600">Create a space together</span></span>
+            </button>
+            <button type="button" onClick={() => setIsQuestsExpanded(!isQuestsExpanded)}
+              className="spark-aura-tile spark-aura-tile-mint text-left rounded-2xl p-3.5 min-h-[88px] flex flex-col justify-between transition-transform active:scale-[0.98]">
+              <CheckCircle2 className="w-5 h-5 text-emerald-700" />
+              <span><span className="block text-sm font-bold text-slate-900">Daily flow</span><span className="block text-[11px] text-slate-600">Your quests and progress</span></span>
+            </button>
+            <button type="button" onClick={onOpenLeaderboard}
+              className="spark-aura-tile spark-aura-tile-amber text-left rounded-2xl p-3.5 min-h-[88px] flex flex-col justify-between transition-transform active:scale-[0.98]">
+              <Trophy className="w-5 h-5 text-amber-700" />
+              <span><span className="block text-sm font-bold text-slate-900">Leaderboard</span><span className="block text-[11px] text-slate-600">See your community rank</span></span>
+            </button>
+            <button type="button" onClick={onOpenShop}
+              className="spark-aura-tile spark-aura-tile-pink text-left rounded-2xl p-3.5 min-h-[88px] flex flex-col justify-between transition-transform active:scale-[0.98]">
+              <ShoppingBag className="w-5 h-5 text-fuchsia-700" />
+              <span><span className="block text-sm font-bold text-slate-900">Rewards</span><span className="block text-[11px] text-slate-600">Explore your Spark rewards</span></span>
+            </button>
+          </div>
+        </section>
+
         {/* 2. Stories Row (Only Real stories from current user or friends) */}
         <div className="px-5 sm:px-8 py-2 overflow-x-auto scrollbar-none flex items-center gap-3.5">
           {/* Add story button */}
@@ -253,14 +284,14 @@ export const HomeHub: React.FC<HomeHubProps> = ({
             onClick={onOpenCreateStory}
             className="flex flex-col items-center gap-1 cursor-pointer shrink-0 group"
           >
-            <div className="relative w-14 h-14 rounded-full p-[2px] bg-slate-100 border border-dashed border-[#ff3b69]/40 flex items-center justify-center transition-transform group-hover:scale-105 active:scale-95">
+            <div className="relative w-14 h-14 rounded-full p-[2px] bg-slate-100 border border-dashed border-[#8B5CF6]/40 flex items-center justify-center transition-transform group-hover:scale-105 active:scale-95">
               <img
                 src={profile.avatar_url}
                 alt={profile.username}
                 className="w-full h-full rounded-full object-cover bg-white opacity-85"
                 referrerPolicy="no-referrer"
               />
-              <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#ff3b69] text-white flex items-center justify-center border-2 border-white shadow-xs">
+              <div className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-[#8B5CF6] text-white flex items-center justify-center border-2 border-white shadow-xs">
                 <Plus className="w-3 h-3 stroke-[3]" />
               </div>
             </div>
@@ -276,7 +307,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
               onClick={() => onViewStory(story)}
               className="flex flex-col items-center gap-1 cursor-pointer shrink-0 group"
             >
-              <div className="w-14 h-14 rounded-full p-[2px] bg-gradient-to-tr from-[#ff3b69] via-[#fb7185] to-[#f472b6] shadow-xs transition-transform group-hover:scale-105 active:scale-95">
+              <div className="w-14 h-14 rounded-full p-[2px] bg-gradient-to-tr from-[#8B5CF6] via-[#A78BFA] to-[#f472b6] shadow-xs transition-transform group-hover:scale-105 active:scale-95">
                 <img
                   src={story.avatar_url}
                   alt={story.username}
@@ -295,11 +326,11 @@ export const HomeHub: React.FC<HomeHubProps> = ({
         <div className="px-5 sm:px-8 pt-2 pb-1">
           <div
             onClick={() => setIsQuestsExpanded(!isQuestsExpanded)}
-            className="p-3 rounded-2xl bg-slate-50/80 hover:bg-slate-100/80 border border-slate-100 flex items-center justify-between cursor-pointer transition-colors"
+            className="p-3 rounded-2xl bg-white hover:bg-violet-50/50 border border-violet-100/80 shadow-sm flex items-center justify-between cursor-pointer transition-colors"
           >
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-rose-50 flex items-center justify-center text-[#ff3b69]">
-                <Flame className="w-4 h-4 fill-[#ff3b69]" />
+              <div className="w-7 h-7 rounded-full bg-violet-50 flex items-center justify-center text-[#8B5CF6]">
+                <Flame className="w-4 h-4 fill-[#8B5CF6]" />
               </div>
               <div>
                 <div className="flex items-center gap-1.5">
@@ -329,7 +360,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
 
           {/* Expandable Quest Tasks */}
           {isQuestsExpanded && (
-            <div className="mt-2 p-3 bg-white rounded-2xl border border-slate-100 space-y-2 shadow-sm">
+            <div className="mt-2 p-3 bg-white rounded-2xl border border-violet-100/80 space-y-2 shadow-sm">
               {quests.map((quest) => (
                 <div
                   key={quest.id}
@@ -342,7 +373,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                     quest.completed
                       ? 'bg-emerald-50/60 border-emerald-100 text-emerald-800'
                       : quest.progress >= quest.goal
-                      ? 'bg-rose-50 border-rose-200 text-rose-900 cursor-pointer animate-pulse'
+                      ? 'bg-violet-50 border-violet-200 text-rose-900 cursor-pointer animate-pulse'
                       : 'bg-slate-50/60 border-slate-100 text-slate-700'
                   }`}
                 >
@@ -358,7 +389,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                         className={`h-full rounded-full transition-all ${
                           quest.completed
                             ? 'bg-emerald-400'
-                            : 'bg-gradient-to-r from-[#ff3b69] via-purple-400 to-[#38bdf8]'
+                            : 'bg-gradient-to-r from-[#8B5CF6] via-purple-400 to-[#38bdf8]'
                         }`}
                         style={{
                           width: `${Math.min(100, (quest.progress / quest.goal) * 100)}%`,
@@ -376,7 +407,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                           e.stopPropagation();
                           onClaimQuest(quest.id);
                         }}
-                        className="px-2.5 py-1 rounded-lg bg-[#ff3b69] text-white font-bold text-xs shadow-sm hover:opacity-95"
+                        className="px-2.5 py-1 rounded-lg bg-[#8B5CF6] text-white font-bold text-xs shadow-sm hover:opacity-95"
                       >
                         Claim!
                       </button>
@@ -414,7 +445,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                         onOpenAddFriend();
                       }
                     }}
-                    className="p-2.5 rounded-2xl bg-slate-50/90 hover:bg-rose-50/50 border border-slate-100 flex items-center justify-between gap-3 cursor-pointer transition-all"
+                    className="p-2.5 rounded-2xl bg-slate-50/90 hover:bg-violet-50/50 border border-slate-100 flex items-center justify-between gap-3 cursor-pointer transition-all"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <img
@@ -434,7 +465,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
 
                     <button
                       type="button"
-                      className="px-3 py-1.5 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white text-xs font-bold flex items-center gap-1 shadow-xs shrink-0"
+                      className="px-3 py-1.5 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#A78BFA] text-white text-xs font-bold flex items-center gap-1 shadow-xs shrink-0"
                     >
                       <MessageSquare className="w-3.5 h-3.5" />
                       <span>Message</span>
@@ -460,19 +491,19 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                           onOpenAddFriend();
                         }
                       }}
-                      className="p-2.5 rounded-2xl bg-rose-50/60 hover:bg-rose-50 border border-rose-200/80 flex items-center justify-between gap-3 cursor-pointer transition-all"
+                      className="p-2.5 rounded-2xl bg-violet-50/60 hover:bg-violet-50 border border-violet-200/80 flex items-center justify-between gap-3 cursor-pointer transition-all"
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <img
                           src={direct.avatar_url}
                           alt={direct.username}
-                          className="w-10 h-10 rounded-full object-cover bg-white border border-rose-200 shrink-0"
+                          className="w-10 h-10 rounded-full object-cover bg-white border border-violet-200 shrink-0"
                         />
                         <div className="min-w-0">
                           <h4 className="font-display font-bold text-xs text-slate-900 truncate">
                             Connect with @{direct.username}
                           </h4>
-                          <p className="text-[10px] text-[#ff3b69] font-medium truncate">
+                          <p className="text-[10px] text-[#8B5CF6] font-medium truncate">
                             Tap to message @{direct.username} directly
                           </p>
                         </div>
@@ -480,7 +511,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
 
                       <button
                         type="button"
-                        className="px-3 py-1.5 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white text-xs font-bold flex items-center gap-1 shadow-xs shrink-0"
+                        className="px-3 py-1.5 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#A78BFA] text-white text-xs font-bold flex items-center gap-1 shadow-xs shrink-0"
                       >
                         <UserPlus className="w-3.5 h-3.5" />
                         <span>Message</span>
@@ -494,13 +525,13 @@ export const HomeHub: React.FC<HomeHubProps> = ({
 
           {isLoadingConversations ? (
             <div className="py-16 flex flex-col items-center justify-center text-slate-400 text-xs gap-2">
-              <Loader2 className="w-5 h-5 animate-spin text-[#ff3b69]" />
+              <Loader2 className="w-5 h-5 animate-spin text-[#8B5CF6]" />
               <span>Loading your conversations...</span>
             </div>
           ) : filteredConversations.length === 0 ? (
             /* Empty State: exactly as required by specification */
             <div className="py-16 px-4 text-center flex flex-col items-center justify-center">
-              <div className="w-14 h-14 rounded-full bg-rose-50 flex items-center justify-center text-[#ff3b69] mb-3 shadow-inner">
+              <div className="w-14 h-14 rounded-full bg-violet-50 flex items-center justify-center text-[#8B5CF6] mb-3 shadow-inner">
                 <MessageSquare className="w-7 h-7" />
               </div>
               <h3 className="font-display font-bold text-base text-slate-800 mb-1">
@@ -512,7 +543,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
               <div className="flex flex-wrap items-center justify-center gap-2.5">
                 <button
                   onClick={onOpenAddFriend}
-                  className="px-5 py-2.5 rounded-full bg-gradient-to-r from-[#ff3b69] to-[#fb7185] text-white font-bold text-xs flex items-center gap-2 shadow-md shadow-pink-500/20 hover:opacity-95 active:scale-95 transition-all whitespace-nowrap"
+                  className="px-5 py-2.5 rounded-full bg-gradient-to-r from-[#8B5CF6] to-[#A78BFA] text-white font-bold text-xs flex items-center gap-2 shadow-md shadow-violet-500/20 hover:opacity-95 active:scale-95 transition-all whitespace-nowrap"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>Find someone</span>
@@ -520,7 +551,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                 {onOpenCreateGroup && (
                   <button
                     onClick={onOpenCreateGroup}
-                    className="px-5 py-2.5 rounded-full bg-rose-50 hover:bg-rose-100 border border-rose-200 text-[#ff3b69] font-bold text-xs flex items-center gap-2 active:scale-95 transition-all whitespace-nowrap"
+                    className="px-5 py-2.5 rounded-full bg-violet-50 hover:bg-violet-100 border border-violet-200 text-[#8B5CF6] font-bold text-xs flex items-center gap-2 active:scale-95 transition-all whitespace-nowrap"
                   >
                     <Users className="w-4 h-4" />
                     <span>Create Group</span>
@@ -529,12 +560,12 @@ export const HomeHub: React.FC<HomeHubProps> = ({
               </div>
             </div>
           ) : (
-            <div className="divide-y divide-slate-100/80">
+            <div className="divide-y divide-slate-100">
               {filteredConversations.map((conv) => (
                 <div
                   key={conv.id}
                   onClick={(e) => handleRowClick(e, conv)}
-                  className="py-3.5 flex items-center justify-between gap-3.5 cursor-pointer hover:bg-slate-50/80 active:bg-slate-100/80 rounded-2xl px-2 transition-colors"
+                  className="py-3.5 flex items-center justify-between gap-3.5 cursor-pointer hover:bg-violet-50/50 active:bg-violet-100/50 rounded-2xl px-2 transition-colors"
                 >
                   {/* Left: Avatar with online/group status */}
                   <div className="relative shrink-0">
@@ -547,7 +578,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                       />
                     </div>
                     {conv.is_group ? (
-                      <span className="absolute bottom-0 right-0 w-4 h-4 rounded-full bg-[#ff3b69] border-2 border-white flex items-center justify-center text-white">
+                      <span className="absolute bottom-0 right-0 w-4 h-4 rounded-full bg-[#8B5CF6] border-2 border-white flex items-center justify-center text-white">
                         <Users className="w-2.5 h-2.5" />
                       </span>
                     ) : conv.other_user.is_online ? (
@@ -597,7 +628,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                         )}
                       </p>
                       {conv.has_unread && (
-                        <span className="shrink-0 w-2.5 h-2.5 rounded-full bg-[#ff3b69]" />
+                        <span className="shrink-0 w-2.5 h-2.5 rounded-full bg-[#8B5CF6]" />
                       )}
                     </div>
                   </div>
@@ -612,14 +643,14 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                             e.stopPropagation();
                             setConversationToDelete(conv);
                           }}
-                          className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-violet-600 hover:bg-violet-50 transition-colors"
                           title="Delete group (Creator only)"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       )}
                       <div className="flex items-center gap-1 text-[11px] font-bold text-slate-400">
-                        <Users className="w-3.5 h-3.5 text-[#ff3b69]" />
+                        <Users className="w-3.5 h-3.5 text-[#8B5CF6]" />
                       </div>
                     </div>
                   ) : (
@@ -630,16 +661,16 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                           e.stopPropagation();
                           setConversationToDelete(conv);
                         }}
-                        className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-violet-600 hover:bg-violet-50 transition-colors"
                         title="Delete chat"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                       <div
-                        className="flex items-center gap-0.5 text-xs font-bold text-rose-500 shrink-0"
+                        className="flex items-center gap-0.5 text-xs font-bold text-violet-500 shrink-0"
                         title={`${conv.other_user?.streak_days || 1} days streak`}
                       >
-                        <Flame className="w-3.5 h-3.5 fill-rose-500" />
+                        <Flame className="w-3.5 h-3.5 fill-violet-500" />
                         <span className="font-mono-numbers">{conv.other_user?.streak_days || 1}</span>
                       </div>
                     </div>
@@ -654,7 +685,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
       {/* 5. Bottom Navigation Bar */}
       <div className="fixed bottom-3 left-4 right-4 max-w-md mx-auto z-30">
         <nav
-          className="w-full h-15 rounded-full bg-gradient-to-r from-[#ff3b69] via-[#fb7185] to-[#f43f5e] shadow-xl shadow-rose-500/35 px-4 flex items-center justify-around text-white"
+          className="w-full h-15 rounded-full bg-gradient-to-r from-[#8B5CF6] via-[#A78BFA] to-[#7C3AED] shadow-xl shadow-violet-500/35 px-4 flex items-center justify-around text-white"
           aria-label="Bottom Navigation"
         >
           {/* Chats Tab */}
@@ -667,7 +698,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
           >
             <MessageSquare className="w-5 h-5 fill-white/20 stroke-[2.2]" />
             {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-white text-[#ff3b69] text-[9px] font-black shadow-sm">
+              <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-white text-[#8B5CF6] text-[9px] font-black shadow-sm">
                 +{unreadCount}
               </span>
             )}
@@ -685,7 +716,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
           {/* Center Plus Button (Directly opens real user search!) */}
           <button
             onClick={onOpenAddFriend}
-            className="w-11 h-11 rounded-full bg-white text-[#ff3b69] flex items-center justify-center shadow-md shadow-black/15 transition-transform hover:scale-105 active:scale-90 -mt-5 border-2 border-[#ff3b69]/20"
+            className="w-11 h-11 rounded-full bg-white text-[#8B5CF6] flex items-center justify-center shadow-md shadow-black/15 transition-transform hover:scale-105 active:scale-90 -mt-5 border-2 border-[#8B5CF6]/20"
             title="Search by Username & Start New Chat"
           >
             <Plus className="w-6 h-6 stroke-[3]" />
@@ -723,7 +754,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
             className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-slate-100 text-center space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="w-12 h-12 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+            <div className="w-12 h-12 rounded-full bg-violet-50 text-violet-600 flex items-center justify-center mx-auto">
               <Trash2 className="w-6 h-6" />
             </div>
             <div>
@@ -765,7 +796,7 @@ export const HomeHub: React.FC<HomeHubProps> = ({
                     }
                   }
                 }}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
               >
                 {isDeletingConversation ? (
                   <>

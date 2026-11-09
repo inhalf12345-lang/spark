@@ -222,8 +222,53 @@ export function saveDraftTodoTasks(
   } catch {}
 }
 
+function notifyLocalGroupTodoListeners(
+  conversationId: string,
+  lists: MemberDailyTodoList[]
+): void {
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('spark_group_todos_updated', {
+          detail: { conversationId, lists },
+        })
+      );
+    } catch {}
+  }
+}
+
+function broadcastGroupTodoEntry(
+  conversationId: string,
+  entry: MemberDailyTodoList
+): void {
+  if (!isSupabaseConfigured()) return;
+  const supabase = getSupabase();
+  if (!supabase) return;
+  try {
+    const channel = supabase.channel(`group_todos_${conversationId}`);
+    const state = (channel as any).state;
+    if (state === 'joined') {
+      void channel.send({
+        type: 'broadcast',
+        event: 'todo_updated',
+        payload: entry,
+      });
+    } else {
+      channel.subscribe((subStatus) => {
+        if (subStatus === 'SUBSCRIBED') {
+          void channel.send({
+            type: 'broadcast',
+            event: 'todo_updated',
+            payload: entry,
+          });
+        }
+      });
+    }
+  } catch {}
+}
+
 /**
- * Creates or updates a user's daily to-do list for a group and optionally broadcasts to Supabase.
+ * Creates or updates a user's daily to-do list for a group and broadcasts to Supabase.
  */
 export async function upsertMemberDailyTodoList(
   conversationId: string,
@@ -261,25 +306,51 @@ export async function upsertMemberDailyTodoList(
   }
 
   saveGroupDailyTodos(conversationId, nextLists, dateKey);
+  notifyLocalGroupTodoListeners(conversationId, nextLists);
+  broadcastGroupTodoEntry(conversationId, updatedEntry);
 
-  // Sync via Supabase Realtime broadcast channel so other live group members see instant progress
-  if (isSupabaseConfigured()) {
-    const supabase = getSupabase();
-    if (supabase) {
-      try {
-        const channel = supabase.channel(`group_todos_${conversationId}`);
-        channel.subscribe((subStatus) => {
-          if (subStatus === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'todo_updated',
-              payload: updatedEntry,
-            });
-          }
-        });
-      } catch {}
-    }
-  }
+  return nextLists;
+}
+
+/**
+ * Toggles a specific task's completion state within a group's daily to-do lists
+ * for authorized group members and synchronizes across local and Supabase Realtime channels.
+ */
+export async function toggleGroupTodoTask(
+  conversationId: string,
+  targetUserId: string,
+  taskId: string,
+  members?: PublicUserProfile[]
+): Promise<MemberDailyTodoList[]> {
+  const dateKey = getTodayDateKey();
+  const existingLists = getGroupDailyTodos(conversationId, members, dateKey);
+  const idx = existingLists.findIndex((item) => item.user_id === targetUserId);
+  if (idx < 0) return existingLists;
+
+  const targetList = existingLists[idx];
+  const nowIso = new Date().toISOString();
+  const updatedTasks = targetList.tasks.map((t) =>
+    t.id === taskId
+      ? {
+          ...t,
+          completed: !t.completed,
+          completed_at: !t.completed ? nowIso : undefined,
+        }
+      : t
+  );
+
+  const updatedEntry: MemberDailyTodoList = {
+    ...targetList,
+    tasks: updatedTasks,
+    updated_at: nowIso,
+  };
+
+  const nextLists = [...existingLists];
+  nextLists[idx] = updatedEntry;
+
+  saveGroupDailyTodos(conversationId, nextLists, dateKey);
+  notifyLocalGroupTodoListeners(conversationId, nextLists);
+  broadcastGroupTodoEntry(conversationId, updatedEntry);
 
   return nextLists;
 }

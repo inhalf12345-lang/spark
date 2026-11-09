@@ -13,7 +13,7 @@
   body {
     font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     color: #0f172a;
-    background: linear-gradient(135deg, #70d6ff 0%, #a8d5ff 25%, #e8d7ff 50%, #ff9ebb 75%, #ff5c8d 100%);
+    background: #f8f7fc;
     min-height: 100vh;
     overflow-x: hidden;
     user-select: none;
@@ -147,4 +147,47 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(244, 63, 94, 0.5);
+}
+
+
+/* =========================================================
+   SPARK AURA — Phase 1 home surfaces
+   ========================================================= */
+:root {
+  --spark-aura-accent: #8b5cf6;
+  --spark-aura-accent-soft: #f1ecfc;
+  --spark-aura-surface: #ffffff;
+  --spark-aura-page: #f8f7fc;
+}
+
+.spark-aura-home {
+  background: var(--spark-aura-page);
+  color: #171426;
+}
+
+.spark-aura-tile {
+  border: 1px solid rgba(255,255,255,.9);
+  box-shadow: 0 5px 18px rgba(42, 30, 75, .055);
+}
+
+.spark-aura-tile-lilac { background: #eee7ff; }
+.spark-aura-tile-mint { background: #e1f4ec; }
+.spark-aura-tile-amber { background: #fff0d8; }
+.spark-aura-tile-pink { background: #fbe8f4; }
+
+.spark-aura-home button:focus-visible,
+.spark-aura-home input:focus-visible {
+  outline: 2px solid var(--spark-aura-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spark-aura-home *,
+  .spark-aura-home *::before,
+  .spark-aura-home *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }

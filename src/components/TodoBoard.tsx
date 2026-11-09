@@ -309,41 +309,45 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({
 
               {/* Member Task Checklist */}
               <div className="space-y-1.5 pt-0.5">
-                {memberTodo.tasks.map((task) => (
-                  <div
-                    key={task.id}
-                    onClick={() => {
-                      if (isMe && !isCurrentUserLocked) {
-                        onToggleTask(currentUserId, task.id);
-                      }
-                    }}
-                    className={`px-3 py-2 rounded-xl border flex items-center justify-between gap-2.5 text-xs transition-colors ${
-                      isMe && !isCurrentUserLocked
-                        ? 'cursor-pointer hover:border-rose-300 hover:bg-white'
-                        : ''
-                    } ${
-                      task.completed
-                        ? 'bg-emerald-50/50 border-emerald-200/70 text-slate-600'
-                        : 'bg-white border-slate-200/60 text-slate-800'
-                    }`}
-                  >
-                    <span
-                      className={task.completed ? 'line-through text-slate-400' : 'font-medium'}
-                    >
-                      {task.text}
-                    </span>
-
+                {memberTodo.tasks.map((task) => {
+                  const isListLocked =
+                    memberTodo.status === 'submitted' || memberTodo.status === 'auto_submitted';
+                  return (
                     <div
-                      className={`w-4 h-4 rounded-md flex items-center justify-center shrink-0 ${
+                      key={task.id}
+                      onClick={() => {
+                        if (!isListLocked) {
+                          onToggleTask(memberTodo.user_id, task.id);
+                        }
+                      }}
+                      className={`px-3 py-2 rounded-xl border flex items-center justify-between gap-2.5 text-xs transition-colors ${
+                        !isListLocked
+                          ? 'cursor-pointer hover:border-violet-300 hover:bg-white'
+                          : ''
+                      } ${
                         task.completed
-                          ? 'bg-emerald-500 text-white'
-                          : 'border border-slate-300 bg-slate-50'
+                          ? 'bg-emerald-50/50 border-emerald-200/70 text-slate-600'
+                          : 'bg-white border-slate-200/60 text-slate-800'
                       }`}
                     >
-                      {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
+                      <span
+                        className={task.completed ? 'line-through text-slate-400' : 'font-medium'}
+                      >
+                        {task.text}
+                      </span>
+
+                      <div
+                        className={`w-4 h-4 rounded-md flex items-center justify-center shrink-0 ${
+                          task.completed
+                            ? 'bg-emerald-500 text-white'
+                            : 'border border-slate-300 bg-slate-50'
+                        }`}
+                      >
+                        {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Quick Submit Action for Current User if In Progress */}
