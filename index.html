@@ -50,8 +50,9 @@
         window.__sparkLoadStaticBundle = function () {
           if (loaded || window.__SPARK_MOUNTED__) return;
           loaded = true;
-          var cssUrls = ['./public/gh-pages-bundle/app.css', './gh-pages-bundle/app.css', './assets/app.css'];
-          var jsUrls = ['./public/gh-pages-bundle/app.js', './gh-pages-bundle/app.js', './assets/app.js'];
+          var v = '?v=2.7.0';
+          var cssUrls = ['./public/gh-pages-bundle/app.css' + v, './gh-pages-bundle/app.css' + v, './assets/app.css' + v];
+          var jsUrls = ['./public/gh-pages-bundle/app.js' + v, './gh-pages-bundle/app.js' + v, './assets/app.js' + v];
           loadCssChain(cssUrls, 0);
           loadJsChain(jsUrls, 0);
         };

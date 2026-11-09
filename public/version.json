@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0-web-push",
+  "version": "2.7.0-aura-todo",
   "mode": "production-real-data-only",
   "dummyEntriesRemoved": true,
   "supabaseProject": "https://zyyaeuiprnrezuuqdmyt.supabase.co",

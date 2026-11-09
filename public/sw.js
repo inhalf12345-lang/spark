@@ -8,7 +8,7 @@
  * - Offline fallback is static and contains zero personal or sensitive information.
  */
 
-const SHELL_CACHE_NAME = 'spark-app-shell-v2';
+const SHELL_CACHE_NAME = 'spark-app-shell-v3';
 
 const SAFE_APP_SHELL_PATHS = [
   './',
