@@ -65,6 +65,10 @@ const INITIAL_GROUP_CALL_STATE: GroupVoiceCallState = {
   errorMessage: null,
 };
 
+const GROUP_CALL_BANNER_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+const ACTIVE_GROUP_CALL_STORAGE_PREFIX = 'spark_active_group_call_';
+const ENDED_GROUP_CALL_STORAGE_PREFIX = 'spark_group_call_ended_';
+
 class GroupVoiceCallManager {
   private state: GroupVoiceCallState = { ...INITIAL_GROUP_CALL_STATE };
   private stateListeners = new Set<(state: GroupVoiceCallState) => void>();
@@ -80,6 +84,12 @@ class GroupVoiceCallManager {
   private activeSessionToken = 0;
   private hadRemoteParticipantInSession = false;
   private endedConversationAt = new Map<string, number>();
+  private activeConversationCalls = new Map<string, number>();
+  private activeCallNoticeMessageIds = new Map<string, string>();
+
+  constructor() {
+    this.clearAllStoredBannerStateOnLoad();
+  }
 
   public getState(): GroupVoiceCallState {
     return this.state;
@@ -89,15 +99,92 @@ class GroupVoiceCallManager {
     return new Map(this.remoteStreams);
   }
 
-  public markConversationCallEnded(conversationId: string, endedAt = Date.now()): void {
+  /**
+   * Clears any leftover group call banner state from localStorage and sessionStorage on app load
+   * when no call is active.
+   */
+  public clearAllStoredBannerStateOnLoad(): void {
+    if (this.state.status !== 'idle') return;
+    this.activeConversationCalls.clear();
+    if (typeof window === 'undefined') return;
+    try {
+      const localKeys: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (
+          k &&
+          (k.startsWith(ACTIVE_GROUP_CALL_STORAGE_PREFIX) ||
+            k.startsWith(ENDED_GROUP_CALL_STORAGE_PREFIX))
+        ) {
+          localKeys.push(k);
+        }
+      }
+      localKeys.forEach((k) => localStorage.removeItem(k));
+    } catch {}
+    try {
+      const sessionKeys: string[] = [];
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const k = sessionStorage.key(i);
+        if (
+          k &&
+          (k.startsWith(ACTIVE_GROUP_CALL_STORAGE_PREFIX) ||
+            k.startsWith(ENDED_GROUP_CALL_STORAGE_PREFIX))
+        ) {
+          sessionKeys.push(k);
+        }
+      }
+      sessionKeys.forEach((k) => sessionStorage.removeItem(k));
+    } catch {}
+  }
+
+  public setConversationCallActive(conversationId: string, startedAt = Date.now()): void {
     if (!conversationId) return;
+    if (Date.now() - startedAt >= GROUP_CALL_BANNER_MAX_AGE_MS) {
+      this.clearConversationCallState(conversationId);
+      return;
+    }
+    this.activeConversationCalls.set(conversationId, startedAt);
+    this.endedConversationAt.delete(conversationId);
+    if (typeof window !== 'undefined') {
+      const payload = JSON.stringify({ conversationId, startedAt, active: true });
+      try {
+        sessionStorage.setItem(`${ACTIVE_GROUP_CALL_STORAGE_PREFIX}${conversationId}`, payload);
+      } catch {}
+      try {
+        localStorage.removeItem(`${ENDED_GROUP_CALL_STORAGE_PREFIX}${conversationId}`);
+      } catch {}
+      try {
+        window.dispatchEvent(
+          new CustomEvent('spark_group_call_banner_updated', {
+            detail: { conversationId, startedAt, active: true },
+          })
+        );
+      } catch {}
+    }
+  }
+
+  public clearConversationCallState(conversationId: string, endedAt = Date.now()): void {
+    if (!conversationId) return;
+    this.activeConversationCalls.delete(conversationId);
     this.endedConversationAt.set(conversationId, endedAt);
+
+    const noticeMsgId = this.activeCallNoticeMessageIds.get(conversationId);
+    if (noticeMsgId) {
+      this.activeCallNoticeMessageIds.delete(conversationId);
+      const supabase = isSupabaseConfigured() ? getSupabase() : null;
+      if (supabase) {
+        void supabase.from('messages').delete().eq('id', noticeMsgId);
+      }
+    }
+
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem(
-          `spark_group_call_ended_${conversationId}`,
-          String(endedAt)
-        );
+        localStorage.removeItem(`${ACTIVE_GROUP_CALL_STORAGE_PREFIX}${conversationId}`);
+        localStorage.removeItem(`${ENDED_GROUP_CALL_STORAGE_PREFIX}${conversationId}`);
+      } catch {}
+      try {
+        sessionStorage.removeItem(`${ACTIVE_GROUP_CALL_STORAGE_PREFIX}${conversationId}`);
+        sessionStorage.removeItem(`${ENDED_GROUP_CALL_STORAGE_PREFIX}${conversationId}`);
       } catch {}
       try {
         window.dispatchEvent(
@@ -105,21 +192,46 @@ class GroupVoiceCallManager {
             detail: { conversationId, endedAt },
           })
         );
+        window.dispatchEvent(
+          new CustomEvent('spark_group_call_banner_updated', {
+            detail: { conversationId, startedAt: null, active: false },
+          })
+        );
       } catch {}
     }
   }
 
+  public getActiveConversationCallStartedAt(conversationId: string): number | null {
+    if (!conversationId) return null;
+    let startedAt = this.activeConversationCalls.get(conversationId) || null;
+    if (!startedAt && typeof window !== 'undefined') {
+      try {
+        const raw =
+          sessionStorage.getItem(`${ACTIVE_GROUP_CALL_STORAGE_PREFIX}${conversationId}`) ||
+          localStorage.getItem(`${ACTIVE_GROUP_CALL_STORAGE_PREFIX}${conversationId}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.active && typeof parsed.startedAt === 'number') {
+            startedAt = parsed.startedAt;
+          }
+        }
+      } catch {}
+    }
+    if (!startedAt) return null;
+    if (Date.now() - startedAt >= GROUP_CALL_BANNER_MAX_AGE_MS) {
+      this.clearConversationCallState(conversationId);
+      return null;
+    }
+    return startedAt;
+  }
+
+  public markConversationCallEnded(conversationId: string, endedAt = Date.now()): void {
+    this.clearConversationCallState(conversationId, endedAt);
+  }
+
   public getConversationCallEndedAt(conversationId: string): number {
     if (!conversationId) return 0;
-    const mem = this.endedConversationAt.get(conversationId) || 0;
-    if (typeof window === 'undefined') return mem;
-    try {
-      const raw = localStorage.getItem(`spark_group_call_ended_${conversationId}`);
-      const stored = raw ? Number(raw) : 0;
-      return Math.max(mem, Number.isFinite(stored) ? stored : 0);
-    } catch {
-      return mem;
-    }
+    return this.endedConversationAt.get(conversationId) || 0;
   }
 
   public subscribeState(listener: (state: GroupVoiceCallState) => void): () => void {
@@ -437,9 +549,11 @@ class GroupVoiceCallManager {
           } catch {}
 
           const wasFirstInRoom = this.participantsMap.size <= 1;
+          const nowConnected = Date.now();
+          this.setConversationCallActive(conversationId, nowConnected);
           this.updateState({
             status: 'connected',
-            connectedAt: Date.now(),
+            connectedAt: nowConnected,
             errorMessage: null,
           });
 
@@ -470,12 +584,20 @@ class GroupVoiceCallManager {
 
     try {
       // 1. Insert group call message into public.messages so all members see it and pg_net triggers Web Push
-      await supabase.from('messages').insert({
-        conversation_id: conversationId,
-        sender_id: caller.userId,
-        content: callContent,
-        coins_earned: 0,
-      });
+      const { data: insertedMsg } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: conversationId,
+          sender_id: caller.userId,
+          content: callContent,
+          coins_earned: 0,
+        })
+        .select('id')
+        .maybeSingle();
+
+      if (insertedMsg?.id) {
+        this.activeCallNoticeMessageIds.set(conversationId, insertedMsg.id);
+      }
 
       await supabase
         .from('conversations')

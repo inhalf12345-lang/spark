@@ -891,21 +891,13 @@ export async function fetchUserRealConversations(
         return;
       }
 
+      if (conversationsMap.has(conv.id)) {
+        return;
+      }
+
       if (!conv.is_group && conv.other_user?.id) {
         const existingConvIdForUser = partnerUserConvs.get(conv.other_user.id);
         if (existingConvIdForUser && conversationsMap.has(existingConvIdForUser)) {
-          const existing = conversationsMap.get(existingConvIdForUser)!;
-          const existingTime = new Date(
-            existing.last_message?.created_at || existing.updated_at || 0
-          ).getTime();
-          const newTime = new Date(
-            conv.last_message?.created_at || conv.updated_at || 0
-          ).getTime();
-          if (newTime > existingTime || (!existing.last_message && conv.last_message)) {
-            conversationsMap.delete(existingConvIdForUser);
-            conversationsMap.set(conv.id, conv);
-            partnerUserConvs.set(conv.other_user.id, conv.id);
-          }
           return;
         }
         partnerUserConvs.set(conv.other_user.id, conv.id);
@@ -968,6 +960,9 @@ export async function fetchUserRealConversations(
                 .limit(1)
                 .maybeSingle();
               lastMsgData = data;
+              if (!lastMsgData) {
+                saveCachedMessages(convId, []);
+              }
             } catch (msgErr) {
               console.warn('Failed to fetch last message for conv:', convId, msgErr);
             }
@@ -1685,20 +1680,34 @@ export async function fetchRealMessages(
       });
     }
 
-    const mergedMap = new Map<string, ChatMessage>();
+    const cachedById = new Map<string, ChatMessage>();
     for (const cMsg of cached) {
-      if (cMsg && cMsg.id) mergedMap.set(cMsg.id, cMsg);
-    }
-    for (const sMsg of processedMessages) {
-      if (sMsg && sMsg.id) mergedMap.set(sMsg.id, sMsg);
+      if (cMsg && cMsg.id) cachedById.set(cMsg.id, cMsg);
     }
 
-    const mergedMessages = Array.from(mergedMap.values()).sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    );
+    // Only keep messages whose id still exists on the server; drop any deleted cached messages
+    const serverMessages = processedMessages
+      .filter((sMsg) => Boolean(sMsg && sMsg.id))
+      .map((sMsg) => {
+        const cachedMatch = cachedById.get(sMsg.id);
+        if (
+          sMsg.decryption_error &&
+          cachedMatch &&
+          cachedMatch.content &&
+          !cachedMatch.decryption_error
+        ) {
+          return {
+            ...sMsg,
+            content: cachedMatch.content,
+            decryption_error: false,
+          };
+        }
+        return sMsg;
+      })
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
-    saveCachedMessages(cacheKey, mergedMessages);
-    return mergedMessages;
+    saveCachedMessages(cacheKey, serverMessages);
+    return serverMessages;
   } catch (err) {
     console.warn('Exception in fetchRealMessages:', err);
     return cached;

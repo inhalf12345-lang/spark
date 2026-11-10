@@ -343,25 +343,137 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [groupCallState, setGroupCallState] = useState(() =>
     groupVoiceCallManager.getState()
   );
-  const [groupCallEndedAt, setGroupCallEndedAt] = useState<number>(() =>
-    groupVoiceCallManager.getConversationCallEndedAt(activeConvId)
+  const [activeGroupCallStartedAt, setActiveGroupCallStartedAt] = useState<number | null>(() =>
+    groupVoiceCallManager.getActiveConversationCallStartedAt(activeConvId)
   );
 
   useEffect(() => {
-    setGroupCallEndedAt(groupVoiceCallManager.getConversationCallEndedAt(activeConvId));
+    const syncBanner = () => {
+      setActiveGroupCallStartedAt(
+        groupVoiceCallManager.getActiveConversationCallStartedAt(activeConvId)
+      );
+    };
+    syncBanner();
     const unsubGroup = groupVoiceCallManager.subscribeState((nextState) => {
       setGroupCallState(nextState);
-      setGroupCallEndedAt(groupVoiceCallManager.getConversationCallEndedAt(activeConvId));
+      syncBanner();
     });
-    const handleGroupEnded = () => {
-      setGroupCallEndedAt(groupVoiceCallManager.getConversationCallEndedAt(activeConvId));
-    };
-    window.addEventListener('spark_group_call_ended', handleGroupEnded);
+    window.addEventListener('spark_group_call_ended', syncBanner);
+    window.addEventListener('spark_group_call_banner_updated', syncBanner);
     return () => {
       unsubGroup();
-      window.removeEventListener('spark_group_call_ended', handleGroupEnded);
+      window.removeEventListener('spark_group_call_ended', syncBanner);
+      window.removeEventListener('spark_group_call_banner_updated', syncBanner);
     };
   }, [activeConvId]);
+
+  // Automatically hide and clear the group call banner if it is older than 5 minutes
+  useEffect(() => {
+    if (!activeGroupCallStartedAt) return;
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+    const elapsed = Date.now() - activeGroupCallStartedAt;
+    if (elapsed >= FIVE_MINUTES_MS) {
+      groupVoiceCallManager.clearConversationCallState(activeConvId);
+      setActiveGroupCallStartedAt(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      groupVoiceCallManager.clearConversationCallState(activeConvId);
+      setActiveGroupCallStartedAt(null);
+    }, FIVE_MINUTES_MS - elapsed);
+    return () => clearTimeout(timer);
+  }, [activeGroupCallStartedAt, activeConvId]);
+
+  // Observe live room presence so banner shows ONLY while a group call is actually active, and clears on load if no call is active
+  useEffect(() => {
+    if (!friend.is_group || !isSupabaseConfigured()) {
+      groupVoiceCallManager.clearConversationCallState(activeConvId);
+      setActiveGroupCallStartedAt(null);
+      return;
+    }
+    if (
+      groupCallState.status !== 'idle' &&
+      groupCallState.conversationId === activeConvId
+    ) {
+      return;
+    }
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    let isMounted = true;
+    const roomTopic = `spark_group_voice_room_${activeConvId}`;
+    const observerChannel = supabase.channel(roomTopic, {
+      config: {
+        broadcast: { self: false },
+      },
+    });
+
+    const evaluateRoomPresence = () => {
+      if (!isMounted) return;
+      const presenceState = observerChannel.presenceState();
+      let earliestJoinedAt: number | null = null;
+      const now = Date.now();
+      const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+      Object.entries(presenceState).forEach(([peerId, presences]) => {
+        if (!peerId || peerId === profile.id) return;
+        const latest = (presences as any[])?.[0];
+        if (latest && latest.userId) {
+          const joinedAt = Number(latest.joinedAt) || now;
+          if (now - joinedAt < FIVE_MINUTES_MS) {
+            if (earliestJoinedAt === null || joinedAt < earliestJoinedAt) {
+              earliestJoinedAt = joinedAt;
+            }
+          }
+        }
+      });
+
+      if (earliestJoinedAt !== null) {
+        groupVoiceCallManager.setConversationCallActive(activeConvId, earliestJoinedAt);
+      } else {
+        groupVoiceCallManager.clearConversationCallState(activeConvId);
+      }
+    };
+
+    observerChannel
+      .on('presence', { event: 'sync' }, evaluateRoomPresence)
+      .on('broadcast', { event: 'group_voice_signal' }, ({ payload }) => {
+        if (!isMounted || !payload || payload.conversationId !== activeConvId) return;
+        if (
+          payload.type === 'group-peer-join' ||
+          payload.type === 'group-room-announce'
+        ) {
+          const startedAt =
+            Number(payload.participant?.joinedAt) ||
+            Number(payload.timestamp) ||
+            Date.now();
+          groupVoiceCallManager.setConversationCallActive(activeConvId, startedAt);
+        } else if (payload.type === 'group-call-end') {
+          groupVoiceCallManager.clearConversationCallState(activeConvId);
+        } else if (payload.type === 'group-peer-leave') {
+          setTimeout(evaluateRoomPresence, 200);
+        }
+      })
+      .subscribe((status: string) => {
+        if (status === 'SUBSCRIBED' && isMounted) {
+          evaluateRoomPresence();
+        }
+      });
+
+    return () => {
+      isMounted = false;
+      try {
+        observerChannel.unsubscribe();
+        supabase.removeChannel(observerChannel);
+      } catch {}
+    };
+  }, [
+    friend.is_group,
+    activeConvId,
+    profile.id,
+    groupCallState.status,
+    groupCallState.conversationId,
+  ]);
 
   useEffect(() => {
     const syncMuteState = () => {
@@ -490,10 +602,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
           derivedKey
         );
         if (isSubscribed) {
+          const serverIds = new Set(loadedMessages.map((m) => m.id));
           setMessages((prev) => {
-            const merged = mergeAndDeduplicateMessages(prev, loadedMessages);
-            saveCachedMessages(activeConvId, merged);
-            return merged;
+            const keptPrev = prev.filter((m) => m.id && serverIds.has(m.id));
+            const reconciled = mergeAndDeduplicateMessages(keptPrev, loadedMessages).filter(
+              (m) => m.id && serverIds.has(m.id)
+            );
+            saveCachedMessages(activeConvId, reconciled);
+            return reconciled;
           });
           setIsLoadingMessages(false);
         }
@@ -611,6 +727,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   return next;
                 });
               }
+            }
+          )
+          .on(
+            'postgres_changes',
+            {
+              event: 'DELETE',
+              schema: 'public',
+              table: 'messages',
+            },
+            (payload) => {
+              const deletedId = (payload.old as any)?.id;
+              if (!deletedId) return;
+              setMessages((prev) => {
+                const next = prev.filter((m) => m.id !== deletedId);
+                saveCachedMessages(activeConvId, next);
+                return next;
+              });
             }
           )
           .subscribe();
@@ -1038,32 +1171,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return formatTimestampPrecision(isoString, precisionSettings);
   };
 
-  const latestGroupCallInviteMsg = friend.is_group
-    ? [...messages]
-        .reverse()
-        .find((m) => m.content && /started a group voice call/i.test(m.content))
-    : undefined;
-
-  const latestGroupCallInviteTime = latestGroupCallInviteMsg?.created_at
-    ? new Date(latestGroupCallInviteMsg.created_at).getTime()
-    : 0;
-
   const isCurrentGroupCallActive =
     groupCallState.status !== 'idle' && groupCallState.conversationId === activeConvId;
 
-  const wasLatestGroupCallEnded =
-    groupCallEndedAt > 0 && latestGroupCallInviteTime <= groupCallEndedAt + 15000;
-
-  const isOwnEndedCallInvite =
-    latestGroupCallInviteMsg?.sender_id === profile.id && !isCurrentGroupCallActive;
-
   const hasRecentGroupCallInvite =
     Boolean(friend.is_group) &&
-    Boolean(latestGroupCallInviteMsg) &&
     !isCurrentGroupCallActive &&
-    !wasLatestGroupCallEnded &&
-    !isOwnEndedCallInvite &&
-    Date.now() - latestGroupCallInviteTime < 45 * 60 * 1000;
+    activeGroupCallStartedAt !== null &&
+    Date.now() - activeGroupCallStartedAt < 5 * 60 * 1000;
 
   return (
     <div
@@ -1410,20 +1525,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               <span>Join Google Meet</span>
                             </a>
                           )}
-                          {friend.is_group && /started a group voice call/i.test(msg.content) && (
-                            <button
-                              type="button"
-                              onClick={() => handleStartOrJoinGroupCall(false)}
-                              className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer ${
-                                isMine
-                                  ? 'bg-white text-[#7C3AED] hover:bg-violet-50'
-                                  : 'bg-emerald-600 text-white hover:bg-emerald-700'
-                              }`}
-                            >
-                              <Phone className="w-3.5 h-3.5 fill-current" />
-                              <span>Join Group Voice Call</span>
-                            </button>
-                          )}
+                          {friend.is_group &&
+                            hasRecentGroupCallInvite &&
+                            /started a group voice call/i.test(msg.content) && (
+                              <button
+                                type="button"
+                                onClick={() => handleStartOrJoinGroupCall(false)}
+                                className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer ${
+                                  isMine
+                                    ? 'bg-white text-[#7C3AED] hover:bg-violet-50'
+                                    : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                }`}
+                              >
+                                <Phone className="w-3.5 h-3.5 fill-current" />
+                                <span>Join Group Voice Call</span>
+                              </button>
+                            )}
                         </div>
                       )}
                     </div>
