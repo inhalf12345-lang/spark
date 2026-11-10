@@ -33,6 +33,7 @@ export interface GroupVoiceCallState {
 type GroupSignalType =
   | 'group-peer-join'
   | 'group-peer-leave'
+  | 'group-call-end'
   | 'group-peer-mute'
   | 'group-room-query'
   | 'group-room-announce'
@@ -76,6 +77,9 @@ class GroupVoiceCallManager {
   private peerConnections = new Map<string, RTCPeerConnection>();
   private pendingIceByPeer = new Map<string, RTCIceCandidateInit[]>();
   private participantsMap = new Map<string, GroupCallParticipant>();
+  private activeSessionToken = 0;
+  private hadRemoteParticipantInSession = false;
+  private endedConversationAt = new Map<string, number>();
 
   public getState(): GroupVoiceCallState {
     return this.state;
@@ -83,6 +87,39 @@ class GroupVoiceCallManager {
 
   public getRemoteStreams(): Map<string, MediaStream> {
     return new Map(this.remoteStreams);
+  }
+
+  public markConversationCallEnded(conversationId: string, endedAt = Date.now()): void {
+    if (!conversationId) return;
+    this.endedConversationAt.set(conversationId, endedAt);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(
+          `spark_group_call_ended_${conversationId}`,
+          String(endedAt)
+        );
+      } catch {}
+      try {
+        window.dispatchEvent(
+          new CustomEvent('spark_group_call_ended', {
+            detail: { conversationId, endedAt },
+          })
+        );
+      } catch {}
+    }
+  }
+
+  public getConversationCallEndedAt(conversationId: string): number {
+    if (!conversationId) return 0;
+    const mem = this.endedConversationAt.get(conversationId) || 0;
+    if (typeof window === 'undefined') return mem;
+    try {
+      const raw = localStorage.getItem(`spark_group_call_ended_${conversationId}`);
+      const stored = raw ? Number(raw) : 0;
+      return Math.max(mem, Number.isFinite(stored) ? stored : 0);
+    } catch {
+      return mem;
+    }
   }
 
   public subscribeState(listener: (state: GroupVoiceCallState) => void): () => void {
@@ -125,10 +162,15 @@ class GroupVoiceCallManager {
   }
 
   private syncParticipantsToState(): void {
+    if (this.state.status === 'idle') return;
     const list = Array.from(this.participantsMap.values()).sort(
       (a, b) => a.joinedAt - b.joinedAt
     );
     this.updateState({ participants: list });
+  }
+
+  private isSessionActive(token: number): boolean {
+    return token === this.activeSessionToken && this.state.status !== 'idle';
   }
 
   /**
@@ -185,6 +227,9 @@ class GroupVoiceCallManager {
       };
     }
 
+    const sessionToken = ++this.activeSessionToken;
+    this.hadRemoteParticipantInSession = false;
+
     const myParticipant: GroupCallParticipant = {
       userId: localProfile.id,
       username: localProfile.username,
@@ -227,6 +272,9 @@ class GroupVoiceCallManager {
         video: false,
       });
     } catch (micErr: any) {
+      if (!this.isSessionActive(sessionToken)) {
+        return { success: false };
+      }
       const msg =
         micErr?.name === 'NotAllowedError' || micErr?.name === 'PermissionDeniedError'
           ? 'Microphone permission was denied. Please allow microphone access in browser settings to join the group call.'
@@ -242,6 +290,16 @@ class GroupVoiceCallManager {
       return { success: false, error: msg };
     }
 
+    // If the user cut/left the call while getUserMedia was pending, stop tracks immediately and do not reopen UI
+    if (!this.isSessionActive(sessionToken)) {
+      for (const track of micStream.getTracks()) {
+        try {
+          track.stop();
+        } catch {}
+      }
+      return { success: false };
+    }
+
     this.localStream = micStream;
 
     if (!isSupabaseConfigured()) {
@@ -255,6 +313,7 @@ class GroupVoiceCallManager {
     const supabase = getSupabase();
     if (!supabase) {
       this.releaseGroupResources();
+      this.updateState({ ...INITIAL_GROUP_CALL_STATE });
       return { success: false, error: 'Supabase is not configured.' };
     }
 
@@ -271,6 +330,11 @@ class GroupVoiceCallManager {
       }
     } catch {}
 
+    if (!this.isSessionActive(sessionToken)) {
+      this.releaseGroupResources();
+      return { success: false };
+    }
+
     const channel = supabase.channel(roomTopic, {
       config: {
         broadcast: { self: false },
@@ -282,6 +346,9 @@ class GroupVoiceCallManager {
 
     channel
       .on('presence', { event: 'sync' }, () => {
+        if (!this.isSessionActive(sessionToken)) {
+          return;
+        }
         const presenceState = channel.presenceState();
         const activeIds = new Set<string>([myParticipant.userId]);
 
@@ -290,6 +357,7 @@ class GroupVoiceCallManager {
           const latest = (presences as any[])?.[0];
           if (latest && latest.userId) {
             activeIds.add(peerUserId);
+            this.hadRemoteParticipantInSession = true;
             const existing = this.participantsMap.get(peerUserId);
             this.participantsMap.set(peerUserId, {
               userId: latest.userId,
@@ -323,19 +391,34 @@ class GroupVoiceCallManager {
           }
         }
 
+        // If remote participants were in this call and all of them have now left, end the call automatically
+        if (this.hadRemoteParticipantInSession && this.participantsMap.size <= 1) {
+          void this.leaveGroupVoiceCall(true);
+          return;
+        }
+
         this.syncParticipantsToState();
       })
       .on('broadcast', { event: 'group_voice_signal' }, ({ payload }) => {
-        if (!payload) return;
+        if (!this.isSessionActive(sessionToken) || !payload) {
+          return;
+        }
         this.handleGroupSignal(payload as GroupSignalPayload).catch((err) =>
           console.warn('[GroupVoiceCall] Signal error:', err)
         );
       })
       .subscribe(async (status: string) => {
+        if (!this.isSessionActive(sessionToken)) {
+          return;
+        }
         if (status === 'SUBSCRIBED') {
           try {
             await channel.track(myParticipant);
           } catch {}
+
+          if (!this.isSessionActive(sessionToken)) {
+            return;
+          }
 
           await this.sendGroupSignal({
             type: 'group-peer-join',
@@ -344,6 +427,10 @@ class GroupVoiceCallManager {
             participant: myParticipant,
             timestamp: Date.now(),
           });
+
+          if (!this.isSessionActive(sessionToken)) {
+            return;
+          }
 
           try {
             playCallConnectedTone();
@@ -430,6 +517,7 @@ class GroupVoiceCallManager {
   }
 
   private async handleGroupSignal(msg: GroupSignalPayload): Promise<void> {
+    if (this.state.status === 'idle') return;
     const myUser = this.localParticipant;
     if (!myUser || !this.state.conversationId) return;
     if (msg.conversationId !== this.state.conversationId) return;
@@ -452,6 +540,7 @@ class GroupVoiceCallManager {
       }
 
       case 'group-peer-join': {
+        this.hadRemoteParticipantInSession = true;
         if (msg.participant) {
           this.participantsMap.set(msg.senderId, {
             ...msg.participant,
@@ -467,7 +556,20 @@ class GroupVoiceCallManager {
       case 'group-peer-leave': {
         this.removePeerConnection(msg.senderId);
         this.participantsMap.delete(msg.senderId);
+        if (this.hadRemoteParticipantInSession && this.participantsMap.size <= 1) {
+          await this.leaveGroupVoiceCall(true);
+          return;
+        }
         this.syncParticipantsToState();
+        break;
+      }
+
+      case 'group-call-end': {
+        this.markConversationCallEnded(msg.conversationId, msg.timestamp || Date.now());
+        if (this.participantsMap.size <= 2) {
+          await this.leaveGroupVoiceCall(true);
+          return;
+        }
         break;
       }
 
@@ -485,6 +587,7 @@ class GroupVoiceCallManager {
 
       case 'group-webrtc-offer': {
         if (!msg.sdp) return;
+        this.hadRemoteParticipantInSession = true;
         if (msg.participant && !this.participantsMap.has(msg.senderId)) {
           this.participantsMap.set(msg.senderId, msg.participant);
           this.syncParticipantsToState();
@@ -515,6 +618,7 @@ class GroupVoiceCallManager {
 
       case 'group-webrtc-answer': {
         if (!msg.sdp) return;
+        this.hadRemoteParticipantInSession = true;
         if (msg.participant && !this.participantsMap.has(msg.senderId)) {
           this.participantsMap.set(msg.senderId, msg.participant);
           this.syncParticipantsToState();
@@ -572,6 +676,7 @@ class GroupVoiceCallManager {
     }
 
     pc.ontrack = (event: RTCTrackEvent) => {
+      if (this.state.status === 'idle') return;
       const stream =
         event.streams && event.streams[0]
           ? event.streams[0]
@@ -587,7 +692,12 @@ class GroupVoiceCallManager {
     };
 
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-      if (event.candidate && this.localParticipant && this.state.conversationId) {
+      if (
+        this.state.status !== 'idle' &&
+        event.candidate &&
+        this.localParticipant &&
+        this.state.conversationId
+      ) {
         this.sendGroupSignal({
           type: 'group-webrtc-ice',
           conversationId: this.state.conversationId,
@@ -600,6 +710,7 @@ class GroupVoiceCallManager {
     };
 
     pc.onconnectionstatechange = () => {
+      if (this.state.status === 'idle') return;
       if (pc.connectionState === 'connected') {
         const p = this.participantsMap.get(peerUserId);
         if (p) {
@@ -613,7 +724,9 @@ class GroupVoiceCallManager {
   }
 
   private async initiateOfferToPeer(peerUserId: string): Promise<void> {
-    if (!this.localParticipant || !this.state.conversationId) return;
+    if (!this.localParticipant || !this.state.conversationId || this.state.status === 'idle') {
+      return;
+    }
     const pc = this.getOrCreatePeerConnection(peerUserId);
     try {
       const offer = await pc.createOffer({
@@ -717,29 +830,82 @@ class GroupVoiceCallManager {
   }
 
   public async leaveGroupVoiceCall(playTone = true): Promise<void> {
+    // 1. Immediately invalidate all in-flight async steps and channel callbacks
+    this.activeSessionToken++;
+    this.hadRemoteParticipantInSession = false;
+
+    const prevConversationId = this.state.conversationId;
+    const prevParticipant = this.localParticipant;
+    const prevChannel = this.roomChannel;
+    const wasAloneOrEnding = this.participantsMap.size <= 2;
+
+    if (prevConversationId) {
+      this.markConversationCallEnded(prevConversationId, Date.now());
+    }
+
+    // 2. Detach channel reference so releaseGroupResources doesn't double-close before our broadcast
+    this.roomChannel = null;
+
+    // 3. Synchronously stop all audio tracks and peer connections
+    this.releaseGroupResources();
+
+    // 4. Synchronously reset state to 'idle' so the Group Call popup disappears in 0ms
+    this.updateState({ ...INITIAL_GROUP_CALL_STATE });
+
     if (playTone && typeof window !== 'undefined') {
       try {
         playCallEndedTone();
       } catch {}
     }
 
-    if (this.localParticipant && this.state.conversationId && this.roomChannel) {
-      await this.sendGroupSignal({
-        type: 'group-peer-leave',
-        conversationId: this.state.conversationId,
-        senderId: this.localParticipant.userId,
-        timestamp: Date.now(),
-      });
-      try {
-        await this.roomChannel.untrack();
-      } catch {}
+    // 5. Non-blocking background broadcast and channel cleanup
+    if (prevChannel) {
+      void (async () => {
+        try {
+          if (prevParticipant && prevConversationId) {
+            await prevChannel.send({
+              type: 'broadcast',
+              event: 'group_voice_signal',
+              payload: {
+                type: 'group-peer-leave',
+                conversationId: prevConversationId,
+                senderId: prevParticipant.userId,
+                timestamp: Date.now(),
+              } as GroupSignalPayload,
+            });
+            if (wasAloneOrEnding) {
+              await prevChannel.send({
+                type: 'broadcast',
+                event: 'group_voice_signal',
+                payload: {
+                  type: 'group-call-end',
+                  conversationId: prevConversationId,
+                  senderId: prevParticipant.userId,
+                  timestamp: Date.now(),
+                } as GroupSignalPayload,
+              });
+            }
+          }
+        } catch {}
+        try {
+          await prevChannel.untrack();
+        } catch {}
+        try {
+          await prevChannel.unsubscribe();
+        } catch {}
+        try {
+          getSupabase()?.removeChannel(prevChannel);
+        } catch {}
+      })();
     }
-
-    this.releaseGroupResources();
-    this.updateState({ ...INITIAL_GROUP_CALL_STATE });
   }
 
   public dismissEndedScreen(): void {
+    this.activeSessionToken++;
+    this.hadRemoteParticipantInSession = false;
+    if (this.state.conversationId) {
+      this.markConversationCallEnded(this.state.conversationId, Date.now());
+    }
     this.releaseGroupResources();
     this.updateState({ ...INITIAL_GROUP_CALL_STATE });
   }
@@ -773,7 +939,7 @@ class GroupVoiceCallManager {
           ch.unsubscribe();
           getSupabase()?.removeChannel(ch);
         } catch {}
-      }, 200);
+      }, 150);
     }
   }
 }

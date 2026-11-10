@@ -235,6 +235,24 @@ export const VoiceCallModal: React.FC = () => {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
+  const handleLeaveGroupCall = () => {
+    setIsGroupMinimized(false);
+    setGroupElapsedSeconds(0);
+    setGroupStreams(new Map());
+    setGroupState({
+      status: 'idle',
+      conversationId: null,
+      groupName: 'Group Call',
+      groupAvatar: '',
+      isMuted: false,
+      isSpeakerOn: false,
+      connectedAt: null,
+      participants: [],
+      errorMessage: null,
+    });
+    void groupVoiceCallManager.leaveGroupVoiceCall();
+  };
+
   // =========================================================================
   // 1. GROUP VOICE CALL UI (When active)
   // =========================================================================
@@ -293,7 +311,7 @@ export const VoiceCallModal: React.FC = () => {
 
               <button
                 type="button"
-                onClick={() => groupVoiceCallManager.leaveGroupVoiceCall()}
+                onClick={handleLeaveGroupCall}
                 className="w-9 h-9 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center transition-colors cursor-pointer"
                 title="Leave Group Call"
               >
@@ -344,7 +362,7 @@ export const VoiceCallModal: React.FC = () => {
               ) : (
                 <button
                   type="button"
-                  onClick={() => groupVoiceCallManager.dismissEndedScreen()}
+                  onClick={handleLeaveGroupCall}
                   className="w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition-colors cursor-pointer"
                   title="Close"
                 >
@@ -460,7 +478,7 @@ export const VoiceCallModal: React.FC = () => {
                 <div className="flex flex-col items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => groupVoiceCallManager.leaveGroupVoiceCall()}
+                    onClick={handleLeaveGroupCall}
                     className="w-16 h-16 rounded-full bg-rose-600 hover:bg-rose-500 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-rose-600/35 transition-all cursor-pointer"
                     title="Leave Group Call"
                   >
@@ -495,7 +513,7 @@ export const VoiceCallModal: React.FC = () => {
               <div className="w-full mt-4">
                 <button
                   type="button"
-                  onClick={() => groupVoiceCallManager.dismissEndedScreen()}
+                  onClick={handleLeaveGroupCall}
                   className="w-full py-2.5 rounded-full bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition-colors cursor-pointer"
                 >
                   Close

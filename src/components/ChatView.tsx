@@ -340,6 +340,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [isChatMuted, setIsChatMuted] = useState<boolean>(() =>
     isConversationMuted(profile.id, activeConvId)
   );
+  const [groupCallState, setGroupCallState] = useState(() =>
+    groupVoiceCallManager.getState()
+  );
+  const [groupCallEndedAt, setGroupCallEndedAt] = useState<number>(() =>
+    groupVoiceCallManager.getConversationCallEndedAt(activeConvId)
+  );
+
+  useEffect(() => {
+    setGroupCallEndedAt(groupVoiceCallManager.getConversationCallEndedAt(activeConvId));
+    const unsubGroup = groupVoiceCallManager.subscribeState((nextState) => {
+      setGroupCallState(nextState);
+      setGroupCallEndedAt(groupVoiceCallManager.getConversationCallEndedAt(activeConvId));
+    });
+    const handleGroupEnded = () => {
+      setGroupCallEndedAt(groupVoiceCallManager.getConversationCallEndedAt(activeConvId));
+    };
+    window.addEventListener('spark_group_call_ended', handleGroupEnded);
+    return () => {
+      unsubGroup();
+      window.removeEventListener('spark_group_call_ended', handleGroupEnded);
+    };
+  }, [activeConvId]);
 
   useEffect(() => {
     const syncMuteState = () => {
@@ -1016,14 +1038,32 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return formatTimestampPrecision(isoString, precisionSettings);
   };
 
+  const latestGroupCallInviteMsg = friend.is_group
+    ? [...messages]
+        .reverse()
+        .find((m) => m.content && /started a group voice call/i.test(m.content))
+    : undefined;
+
+  const latestGroupCallInviteTime = latestGroupCallInviteMsg?.created_at
+    ? new Date(latestGroupCallInviteMsg.created_at).getTime()
+    : 0;
+
+  const isCurrentGroupCallActive =
+    groupCallState.status !== 'idle' && groupCallState.conversationId === activeConvId;
+
+  const wasLatestGroupCallEnded =
+    groupCallEndedAt > 0 && latestGroupCallInviteTime <= groupCallEndedAt + 15000;
+
+  const isOwnEndedCallInvite =
+    latestGroupCallInviteMsg?.sender_id === profile.id && !isCurrentGroupCallActive;
+
   const hasRecentGroupCallInvite =
     Boolean(friend.is_group) &&
-    messages.some(
-      (m) =>
-        m.content &&
-        /started a group voice call/i.test(m.content) &&
-        Date.now() - new Date(m.created_at).getTime() < 45 * 60 * 1000
-    );
+    Boolean(latestGroupCallInviteMsg) &&
+    !isCurrentGroupCallActive &&
+    !wasLatestGroupCallEnded &&
+    !isOwnEndedCallInvite &&
+    Date.now() - latestGroupCallInviteTime < 45 * 60 * 1000;
 
   return (
     <div
@@ -1203,21 +1243,33 @@ export const ChatView: React.FC<ChatViewProps> = ({
       {/* Live Group Voice Call Join Banner */}
       {friend.is_group && hasRecentGroupCallInvite && (
         <div className="w-full bg-gradient-to-r from-[#8B5CF6] via-[#7C3AED] to-emerald-600 text-white px-4 py-2 shadow-sm shrink-0">
-          <div className="max-w-4xl lg:max-w-5xl mx-auto flex items-center justify-between gap-3">
+          <div className="max-w-4xl lg:max-w-5xl mx-auto flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 animate-ping shrink-0" />
               <span className="text-xs font-bold truncate">
                 Group Voice Room Open — Tap to join live audio
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => handleStartOrJoinGroupCall(false)}
-              className="px-3.5 py-1 rounded-full bg-white text-[#7C3AED] hover:bg-violet-50 font-bold text-xs flex items-center gap-1.5 shadow-xs active:scale-95 transition-all shrink-0 cursor-pointer"
-            >
-              <Phone className="w-3.5 h-3.5 fill-current" />
-              <span>Join Call</span>
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleStartOrJoinGroupCall(false)}
+                className="px-3.5 py-1 rounded-full bg-white text-[#7C3AED] hover:bg-violet-50 font-bold text-xs flex items-center gap-1.5 shadow-xs active:scale-95 transition-all shrink-0 cursor-pointer"
+              >
+                <Phone className="w-3.5 h-3.5 fill-current" />
+                <span>Join Call</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  groupVoiceCallManager.markConversationCallEnded(activeConvId, Date.now())
+                }
+                className="w-6 h-6 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center transition-colors cursor-pointer"
+                title="Dismiss banner"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       )}
