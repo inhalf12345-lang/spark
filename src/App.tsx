@@ -1041,7 +1041,11 @@ export default function App() {
       <FluidBackground />
 
       {/* Full-Screen Main Messenger Application Surface */}
-      <div className="relative z-10 w-full min-h-screen flex flex-col bg-white/95 backdrop-blur-md">
+      <div
+        className={`relative z-10 w-full min-h-screen flex flex-col bg-white/95 backdrop-blur-md ${
+          selectedFriend ? 'hidden' : ''
+        }`}
+      >
         {/* Top Header */}
         <TopNav
           profile={profile}
@@ -1110,21 +1114,21 @@ export default function App() {
             onOpenDataPrecision={() => setIsDataPrecisionModalOpen(true)}
           />
         </main>
-
-        {/* Screen Flow into Real ChatView */}
-        {selectedFriend && (
-          <ChatView
-            friend={selectedFriend}
-            profile={profile}
-            conversationId={activeConversationId || undefined}
-            onBack={handleCloseChat}
-            onUpdateCoins={handleUpdateCoins}
-            originCoords={chatOriginCoords}
-            onGroupDeleted={handleDeleteGroup}
-            onDeleteChat={handleDeleteConversation}
-          />
-        )}
       </div>
+
+      {/* Screen Flow into Real ChatView (rendered outside backdrop-blur container so fixed inset-0 locks to viewport) */}
+      {selectedFriend && (
+        <ChatView
+          friend={selectedFriend}
+          profile={profile}
+          conversationId={activeConversationId || undefined}
+          onBack={handleCloseChat}
+          onUpdateCoins={handleUpdateCoins}
+          originCoords={chatOriginCoords}
+          onGroupDeleted={handleDeleteGroup}
+          onDeleteChat={handleDeleteConversation}
+        />
+      )}
 
       {/* Real User Search & Connect Modal */}
       <AddFriendModal

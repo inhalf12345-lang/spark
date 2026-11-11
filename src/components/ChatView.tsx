@@ -463,8 +463,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return () => {
       isMounted = false;
       try {
-        observerChannel.unsubscribe();
-        supabase.removeChannel(observerChannel);
+        if (!groupVoiceCallManager.isOwnRoomChannel(observerChannel)) {
+          observerChannel.unsubscribe();
+          supabase.removeChannel(observerChannel);
+        }
       } catch {}
     };
   }, [
@@ -525,6 +527,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const messagesListRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -537,6 +540,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
     };
   }, [imagePreviewUrl]);
+
+  // Reset window scroll and lock body scroll while ChatView is open to prevent viewport shift
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.scrollTo(0, 0);
+    }
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, []);
 
   // Set origin coordinates for liquid transition
   useEffect(() => {
@@ -765,9 +780,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
     };
   }, [activeConvId, friend.id, friend.is_group, profile.id]);
 
-  // Auto-scroll on new message
+  // Auto-scroll messages container only (never outer window) on new message
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const listEl = messagesListRef.current;
+    if (listEl) {
+      listEl.scrollTo({
+        top: listEl.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
   }, [messages, isLoadingMessages]);
 
   const handleBack = () => {
@@ -1403,7 +1424,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
 
       {/* Messages Stream */}
-      <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3.5 max-w-4xl w-full mx-auto flex flex-col">
+      <div
+        ref={messagesListRef}
+        className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-4 space-y-3.5 max-w-4xl w-full mx-auto flex flex-col"
+      >
         {isLoadingMessages && messages.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center py-16 text-slate-400 text-xs gap-2">
             <Loader2 className="w-5 h-5 animate-spin text-[#8B5CF6]" />

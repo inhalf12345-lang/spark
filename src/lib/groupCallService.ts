@@ -2,6 +2,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { getSupabase, isSupabaseConfigured } from './supabase';
 import { PublicUserProfile, UserProfile } from '../types';
 import { FREE_STUN_ICE_SERVERS } from './callService';
+import { ensureSupabaseAuthSession } from './chatService';
 import {
   playCallConnectedTone,
   playCallEndedTone,
@@ -79,6 +80,7 @@ class GroupVoiceCallManager {
   private localParticipant: GroupCallParticipant | null = null;
   private roomChannel: RealtimeChannel | null = null;
   private peerConnections = new Map<string, RTCPeerConnection>();
+  private makingOfferByPeer = new Map<string, boolean>();
   private pendingIceByPeer = new Map<string, RTCIceCandidateInit[]>();
   private participantsMap = new Map<string, GroupCallParticipant>();
   private activeSessionToken = 0;
@@ -97,6 +99,10 @@ class GroupVoiceCallManager {
 
   public getRemoteStreams(): Map<string, MediaStream> {
     return new Map(this.remoteStreams);
+  }
+
+  public isOwnRoomChannel(ch: RealtimeChannel | null | undefined): boolean {
+    return Boolean(ch && this.roomChannel && ch === this.roomChannel);
   }
 
   /**
@@ -429,6 +435,10 @@ class GroupVoiceCallManager {
       return { success: false, error: 'Supabase is not configured.' };
     }
 
+    try {
+      await ensureSupabaseAuthSession(localProfile);
+    } catch {}
+
     // 2. Subscribe to the group voice room channel (uses prefix spark_group_voice_room_ outside restrictive 1:1 policy)
     const roomTopic = `spark_group_voice_room_${conversationId}`;
     try {
@@ -485,12 +495,20 @@ class GroupVoiceCallManager {
               isConnectedAudio: existing?.isConnectedAudio ?? false,
             });
 
-            // Deterministic tie-breaker: if we don't have a peer connection yet and our userId < peerUserId, initiate offer
+            // Deferred fallback tie-breaker so presence sync does not collide with immediate group-peer-join offer
             if (
               !this.peerConnections.has(peerUserId) &&
               myParticipant.userId.localeCompare(peerUserId) < 0
             ) {
-              this.initiateOfferToPeer(peerUserId).catch(() => {});
+              setTimeout(() => {
+                if (
+                  this.isSessionActive(sessionToken) &&
+                  this.participantsMap.has(peerUserId) &&
+                  !this.peerConnections.has(peerUserId)
+                ) {
+                  this.initiateOfferToPeer(peerUserId).catch(() => {});
+                }
+              }, 450);
             }
           }
         });
@@ -661,16 +679,42 @@ class GroupVoiceCallManager {
         break;
       }
 
-      case 'group-peer-join': {
+      case 'group-room-announce': {
         this.hadRemoteParticipantInSession = true;
         if (msg.participant) {
+          const existing = this.participantsMap.get(msg.senderId);
           this.participantsMap.set(msg.senderId, {
             ...msg.participant,
-            isConnectedAudio: false,
+            isConnectedAudio: existing?.isConnectedAudio ?? false,
           });
           this.syncParticipantsToState();
         }
-        // Existing room member immediately sends a WebRTC offer to the newcomer
+        break;
+      }
+
+      case 'group-peer-join': {
+        this.hadRemoteParticipantInSession = true;
+        if (msg.participant) {
+          const existing = this.participantsMap.get(msg.senderId);
+          this.participantsMap.set(msg.senderId, {
+            ...msg.participant,
+            isConnectedAudio: existing?.isConnectedAudio ?? false,
+          });
+          this.syncParticipantsToState();
+        }
+        // Announce our presence to the newcomer so their participant list updates immediately
+        await this.sendGroupSignal({
+          type: 'group-room-announce',
+          conversationId: this.state.conversationId,
+          senderId: myUser.userId,
+          targetUserId: msg.senderId,
+          participant: {
+            ...myUser,
+            isMuted: this.state.isMuted,
+          },
+          timestamp: Date.now(),
+        });
+        // Existing room member initiates the WebRTC offer to the newcomer
         await this.initiateOfferToPeer(msg.senderId);
         break;
       }
@@ -714,7 +758,20 @@ class GroupVoiceCallManager {
           this.participantsMap.set(msg.senderId, msg.participant);
           this.syncParticipantsToState();
         }
-        const pc = this.getOrCreatePeerConnection(msg.senderId);
+
+        const existingPc = this.peerConnections.get(msg.senderId);
+        const isMakingOffer = Boolean(this.makingOfferByPeer.get(msg.senderId));
+        const offerCollision = Boolean(
+          existingPc && (isMakingOffer || existingPc.signalingState !== 'stable')
+        );
+        const isPolite = myUser.userId.localeCompare(msg.senderId) < 0;
+
+        // WebRTC Perfect Negotiation: impolite peer ignores colliding offer so its own offer completes
+        if (offerCollision && !isPolite) {
+          return;
+        }
+
+        const pc = this.getOrCreatePeerConnection(msg.senderId, offerCollision && isPolite);
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
           await this.flushPendingIceForPeer(msg.senderId, pc);
@@ -775,10 +832,23 @@ class GroupVoiceCallManager {
     }
   }
 
-  private getOrCreatePeerConnection(peerUserId: string): RTCPeerConnection {
+  private getOrCreatePeerConnection(
+    peerUserId: string,
+    forceRecreate = false
+  ): RTCPeerConnection {
     const existing = this.peerConnections.get(peerUserId);
     if (existing) {
+      if (
+        !forceRecreate &&
+        existing.connectionState !== 'closed' &&
+        existing.connectionState !== 'failed' &&
+        existing.signalingState !== 'closed'
+      ) {
+        return existing;
+      }
       try {
+        existing.ontrack = null;
+        existing.onicecandidate = null;
         existing.close();
       } catch {}
     }
@@ -799,12 +869,28 @@ class GroupVoiceCallManager {
 
     pc.ontrack = (event: RTCTrackEvent) => {
       if (this.state.status === 'idle') return;
-      const stream =
-        event.streams && event.streams[0]
-          ? event.streams[0]
-          : new MediaStream([event.track]);
+      event.track.enabled = true;
+      let stream =
+        event.streams && event.streams[0] ? event.streams[0] : null;
+      if (!stream) {
+        const existingStream = this.remoteStreams.get(peerUserId);
+        if (existingStream) {
+          if (!existingStream.getTracks().some((t) => t.id === event.track.id)) {
+            existingStream.addTrack(event.track);
+          }
+          stream = existingStream;
+        } else {
+          stream = new MediaStream([event.track]);
+        }
+      }
       this.remoteStreams.set(peerUserId, stream);
       this.notifyStreamsChanged();
+
+      event.track.onunmute = () => {
+        if (this.state.status === 'idle') return;
+        event.track.enabled = true;
+        this.notifyStreamsChanged();
+      };
 
       const p = this.participantsMap.get(peerUserId);
       if (p) {
@@ -831,6 +917,27 @@ class GroupVoiceCallManager {
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      if (this.state.status === 'idle') return;
+      if (
+        pc.iceConnectionState === 'connected' ||
+        pc.iceConnectionState === 'completed'
+      ) {
+        const p = this.participantsMap.get(peerUserId);
+        if (p) {
+          this.participantsMap.set(peerUserId, { ...p, isConnectedAudio: true });
+          this.syncParticipantsToState();
+        }
+        this.notifyStreamsChanged();
+      } else if (
+        pc.iceConnectionState === 'failed' &&
+        this.localParticipant &&
+        this.localParticipant.userId.localeCompare(peerUserId) < 0
+      ) {
+        this.initiateOfferToPeer(peerUserId, true).catch(() => {});
+      }
+    };
+
     pc.onconnectionstatechange = () => {
       if (this.state.status === 'idle') return;
       if (pc.connectionState === 'connected') {
@@ -839,22 +946,36 @@ class GroupVoiceCallManager {
           this.participantsMap.set(peerUserId, { ...p, isConnectedAudio: true });
           this.syncParticipantsToState();
         }
+        this.notifyStreamsChanged();
       }
     };
 
     return pc;
   }
 
-  private async initiateOfferToPeer(peerUserId: string): Promise<void> {
+  private async initiateOfferToPeer(
+    peerUserId: string,
+    forceRecreate = false
+  ): Promise<void> {
     if (!this.localParticipant || !this.state.conversationId || this.state.status === 'idle') {
       return;
     }
-    const pc = this.getOrCreatePeerConnection(peerUserId);
+    if (this.makingOfferByPeer.get(peerUserId)) {
+      return;
+    }
+    const pc = this.getOrCreatePeerConnection(peerUserId, forceRecreate);
+    if (!forceRecreate && pc.signalingState !== 'stable') {
+      return;
+    }
+    this.makingOfferByPeer.set(peerUserId, true);
     try {
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: false,
       });
+      if (pc.signalingState !== 'stable') {
+        return;
+      }
       await pc.setLocalDescription(offer);
       await this.sendGroupSignal({
         type: 'group-webrtc-offer',
@@ -870,6 +991,8 @@ class GroupVoiceCallManager {
       });
     } catch (err) {
       console.warn('[GroupVoiceCall] Offer creation error:', err);
+    } finally {
+      this.makingOfferByPeer.set(peerUserId, false);
     }
   }
 
@@ -887,6 +1010,7 @@ class GroupVoiceCallManager {
   }
 
   private removePeerConnection(peerUserId: string): void {
+    this.makingOfferByPeer.delete(peerUserId);
     const pc = this.peerConnections.get(peerUserId);
     if (pc) {
       try {

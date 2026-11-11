@@ -27,16 +27,105 @@ const GroupParticipantAudio: React.FC<{
   isSpeakerOn: boolean;
 }> = ({ stream, isSpeakerOn }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   useEffect(() => {
     const el = audioRef.current;
     if (!el || !stream) return;
-    el.srcObject = stream;
-    el.volume = isSpeakerOn ? 1.0 : 0.7;
-    el.play().catch(() => {});
-  }, [stream, isSpeakerOn]);
 
-  return <audio ref={audioRef} autoPlay playsInline className="hidden" />;
+    for (const track of stream.getAudioTracks()) {
+      track.enabled = true;
+    }
+
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
+    el.muted = false;
+    el.volume = 1.0;
+    el.play().catch(() => {});
+
+    const handleTrackAdded = () => {
+      for (const track of stream.getAudioTracks()) {
+        track.enabled = true;
+      }
+      el.play().catch(() => {});
+    };
+    stream.addEventListener('addtrack', handleTrackAdded);
+
+    try {
+      const AC = window.AudioContext || (window as any).webkitAudioContext;
+      if (AC) {
+        if (!audioCtxRef.current) {
+          audioCtxRef.current = new AC();
+        }
+        const ctx = audioCtxRef.current;
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+        }
+        if (sourceNodeRef.current) {
+          try {
+            sourceNodeRef.current.disconnect();
+          } catch {}
+        }
+        if (!gainNodeRef.current) {
+          gainNodeRef.current = ctx.createGain();
+          gainNodeRef.current.connect(ctx.destination);
+        }
+        gainNodeRef.current.gain.value = isSpeakerOn ? 0.85 : 0.0;
+        const src = ctx.createMediaStreamSource(stream);
+        src.connect(gainNodeRef.current);
+        sourceNodeRef.current = src;
+      }
+    } catch {}
+
+    return () => {
+      stream.removeEventListener('addtrack', handleTrackAdded);
+    };
+  }, [stream]);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (el) {
+      el.muted = false;
+      el.volume = 1.0;
+      el.play().catch(() => {});
+    }
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = isSpeakerOn ? 0.85 : 0.0;
+    }
+    if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume().catch(() => {});
+    }
+  }, [isSpeakerOn]);
+
+  useEffect(() => {
+    return () => {
+      if (sourceNodeRef.current) {
+        try {
+          sourceNodeRef.current.disconnect();
+        } catch {}
+        sourceNodeRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        try {
+          audioCtxRef.current.close();
+        } catch {}
+        audioCtxRef.current = null;
+      }
+    };
+  }, []);
+
+  return (
+    <audio
+      ref={audioRef}
+      autoPlay
+      playsInline
+      muted={false}
+      className="sr-only pointer-events-none w-0 h-0 opacity-0"
+    />
+  );
 };
 
 export const VoiceCallModal: React.FC = () => {
