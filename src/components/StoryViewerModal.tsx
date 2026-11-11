@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Clock, Heart } from 'lucide-react';
 import { UserStory } from '../types';
 
@@ -18,6 +18,11 @@ export const StoryViewerModal: React.FC<StoryViewerModalProps> = ({
   const [progress, setProgress] = useState(0);
   const [sparkCount, setSparkCount] = useState(story?.spark_reactions || 0);
   const [reacted, setReacted] = useState(false);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen || !story) {
@@ -26,25 +31,28 @@ export const StoryViewerModal: React.FC<StoryViewerModalProps> = ({
       return;
     }
 
+    setProgress(0);
+    setReacted(false);
     setSparkCount(story.spark_reactions || 0);
 
     const interval = 50;
     const totalDuration = 7000;
     const step = (interval / totalDuration) * 100;
+    let currentProgress = 0;
 
     const timer = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(timer);
-          onClose();
-          return 100;
-        }
-        return prev + step;
-      });
+      currentProgress += step;
+      if (currentProgress >= 100) {
+        clearInterval(timer);
+        setProgress(100);
+        onCloseRef.current();
+      } else {
+        setProgress(currentProgress);
+      }
     }, interval);
 
     return () => clearInterval(timer);
-  }, [isOpen, story, onClose]);
+  }, [isOpen, story?.id]);
 
   if (!isOpen || !story) return null;
 
